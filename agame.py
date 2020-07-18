@@ -1,4 +1,6 @@
 import os
+import pickle
+import random
 
 import discord
 from discord.ext import commands
@@ -32,6 +34,10 @@ except:
 # client = discord.Client()
 bot = commands.Bot(command_prefix=PREFIX)
 
+# load 5-letter words
+with open('5-letter_words.pkl', 'rb') as f:
+    FIVE_LETTER_WORDS = pickle.load(f)
+
 @bot.event
 async def on_ready():
     print(f'{bot.user.name} has connected to Discord!')
@@ -55,7 +61,7 @@ async def startguess(ctx):
     guild_name = sql_escape_single_quotes(ctx.guild.name)
     cursor.execute(f"SELECT currword FROM guilds where id={ctx.guild.id}")
     query_result = cursor.fetchall()
-    word = 'width'
+    word = random.choice(FIVE_LETTER_WORDS)
     if len(query_result) == 0: # guild's not in the database yet, so add them in with a new word
         cursor.execute(f"INSERT INTO guilds (id, guildname, currword) VALUES ({ctx.guild.id}, '{guild_name}', '{word}')")
         db.commit()
@@ -85,15 +91,43 @@ async def guess(ctx, guess):
         if query_result[0][0] == None: # the guild is in the database but doesn't have a current word, so complain to the user
             await ctx.send(f"There's no word-guessing game happening right now. Use `{PREFIX}startguess` to start one.")
             return
-        else: # use the word that's currently in the database for this guild
-            word = query_result[0][0]
+    
+    # okay, there is indeed a game going on at this point
+    # use the word that's currently in the database for this guild
+    word = query_result[0][0]
     
     if guess == word:
         cursor.execute(f"UPDATE guilds SET currword = NULL where id = {ctx.guild.id}")
         db.commit()
-        await ctx.send(f"You guessed it! The word was {word}. Good game! Use `{PREFIX}startguess` to start another.")
+        await ctx.send(f"<@!{ctx.author.id}> guessed it! The word was **{word}**. Good game! Use `{PREFIX}startguess` to start another.")
     else:
-        await ctx.send(f"Nope! Try again.")
+        await evaluate_word_guess(ctx, word, guess)
+
+async def evaluate_word_guess(ctx, word, guess):
+    # check for valid guess
+    # check for exactly 5 letters
+    if len(guess) != 5:
+        await ctx.send(f"Invalid guess. **{guess}** doesn't have exactly five letters")
+        return
+    # check for no duplicates
+    chars = set()
+    for char in guess:
+        chars.add(char)
+    if len(chars) != 5:
+        await ctx.send(f"Invalid guess. **{guess}** has a duplicate letter")
+        return
+    # check if it's a recognized word
+    if guess not in FIVE_LETTER_WORDS:
+        await ctx.send(f"I don't recognize the word **{guess}**")
+        return
+    
+    # okay, it is a valid guess, so respond to the user with how many letters in common
+    num_common_letters = 0
+    for char in word:
+        num_common_letters += char in guess
+    s = "" if num_common_letters == 1 else "s"
+    ending = ", but that's not it!" if num_common_letters == 5 else "."
+    await ctx.send(f"The word **{guess}** shares **{num_common_letters}** letter{s} with my word{ending}")
 
 @guess.error
 async def guess_error(ctx, error):
