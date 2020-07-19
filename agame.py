@@ -326,6 +326,10 @@ async def quit_timer(ctx, game):
     if len(yeas) > len(neas):   
         await ctx.send(f"Time's up! The people have spoken: they've voted {len(yeas)}-{len(neas)} to **quit** the {game} game. Use `{PREFIX}start {game}` to start a new one")
         if game=='guess':
+            # reset the list of who is playing the guess game
+            cursor.execute(f"UPDATE guild{ctx.guild.id}users SET playingguess = NULL")
+            
+            # send the secret word in a message, then clear the word
             cursor.execute(f"SELECT currword FROM guilds WHERE id={ctx.guild.id}")
             await ctx.send(f"My word was **{cursor.fetchone()[0]}**")
             cursor.execute(f"UPDATE guilds SET currword = NULL where id={ctx.guild.id}")
