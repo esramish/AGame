@@ -14,23 +14,22 @@ PREFIX = os.getenv('AGAME_PREFIX')
 
 import mysql.connector 
 
-db = mysql.connector.connect(
-    host=os.getenv('AGAME_DB_IP'),
-    user=os.getenv('AGAME_DB_USERNAME'),
-    password=os.getenv('AGAME_DB_PASSWORD'),
-    database=os.getenv('AGAME_DB_DBNAME')
-)
+def get_new_db_connection():
+    '''Connect to the database using the values specified in the environment. Implemented as a function so that it can be called easily in other places when it's discovered that the connection was lost/ended.'''
+    return mysql.connector.connect(
+        host=os.getenv('AGAME_DB_IP'),
+        user=os.getenv('AGAME_DB_USERNAME'),
+        password=os.getenv('AGAME_DB_PASSWORD'),
+        database=os.getenv('AGAME_DB_DBNAME')
+    )
+
+db = get_new_db_connection()
 
 cursor = db.cursor(buffered=True)
 
-try: 
-    cursor.execute("SELECT * FROM users")
-except: 
-    cursor.execute("CREATE TABLE users (id BIGINT PRIMARY KEY, username VARCHAR(255), balance INT)")
-try:
-    cursor.execute("SELECT * FROM guilds")
-except: 
-    cursor.execute("CREATE TABLE guilds (id BIGINT PRIMARY KEY, guildname VARCHAR(255), currword VARCHAR(10), guessquitvotedeadline DATETIME)")
+
+cursor.execute("CREATE TABLE IF NOT EXISTS users (id BIGINT PRIMARY KEY, username VARCHAR(255), balance INT)")
+cursor.execute("CREATE TABLE IF NOT EXISTS guilds (id BIGINT PRIMARY KEY, guildname VARCHAR(255), currword VARCHAR(10), guessquitvotedeadline DATETIME)")
 
 bot = commands.Bot(command_prefix=PREFIX)
 
@@ -80,6 +79,14 @@ async def balance(ctx, user: discord.Member=None):
 async def balance_error(ctx, error):
     if isinstance(error, commands.errors.BadArgument):
         await ctx.send(f"Use the format `{PREFIX}balance` to check your own balance, or use `{PREFIX}balance <user_mention>` (e.g. `{PREFIX}balance `<@!{bot.user.id}>` `) to check someone else's.")
+    elif not db.is_connected():
+        db = get_new_db_connection()
+        if db.is_connected():
+            print(f"Reconnected to database at {datetime.now()}")
+            ctx.send("Sorry, I was snoozing! Could you give your command again, please?")
+        else:
+            print(f"Failed to reconnect to database at {datetime.now()}")
+            ctx.send("Sorry, there's been an internal error")
     else: raise error
 
 @bot.command(name='listgames', help="Lists all the games the bot currently provides")
@@ -99,10 +106,7 @@ async def start_game(ctx, game):
         return
     
     # make sure the guild users table exists for this guild
-    try:
-        cursor.execute(f"SELECT * FROM guild{ctx.guild.id}users")
-    except: 
-        cursor.execute(f"CREATE TABLE guild{ctx.guild.id}users (id BIGINT PRIMARY KEY, username VARCHAR(255), playingguess BIT, votetoquitguess BIT)")
+    cursor.execute(f"CREATE TABLE IF NOT EXISTS guild{ctx.guild.id}users (id BIGINT PRIMARY KEY, username VARCHAR(255), playingguess BIT, votetoquitguess BIT)")
 
     guild_name = sql_escape_single_quotes(ctx.guild.name)
     cursor.execute(f"SELECT currword FROM guilds where id={ctx.guild.id}")
@@ -128,6 +132,14 @@ async def start_game(ctx, game):
 async def start_game_error(ctx, error):
     if isinstance(error, commands.errors.MissingRequiredArgument):
         await ctx.send(f"Use the format `{PREFIX}start <game>` (e.g. `{PREFIX}start guess`) to start a game.")
+    elif not db.is_connected():
+        db = get_new_db_connection()
+        if db.is_connected():
+            print(f"Reconnected to database at {datetime.now()}")
+            ctx.send("Sorry, I was snoozing! Could you give your command again, please?")
+        else:
+            print(f"Failed to reconnect to database at {datetime.now()}")
+            ctx.send("Sorry, there's been an internal error")
     else: raise error
 
 @bot.command(name='guess', help='Guesses a word in the 5-letter-word guessing game')
@@ -229,6 +241,14 @@ async def evaluate_word_guess(ctx, word, guess):
 async def guess_error(ctx, error):
     if isinstance(error, commands.errors.MissingRequiredArgument):
         await ctx.send(f"Use the format `{PREFIX}guess <word>` to guess a word.")
+    elif not db.is_connected():
+        db = get_new_db_connection()
+        if db.is_connected():
+            print(f"Reconnected to database at {datetime.now()}")
+            ctx.send("Sorry, I was snoozing! Could you give your command again, please?")
+        else:
+            print(f"Failed to reconnect to database at {datetime.now()}")
+            ctx.send("Sorry, there's been an internal error")
     else: raise error
 
 @bot.command(name='quit', help='Initiates a vote to quit a current game')
@@ -341,6 +361,14 @@ async def quit_timer(ctx, game):
 async def quit_game_error(ctx, error):
     if isinstance(error, commands.errors.MissingRequiredArgument):
         await ctx.send(f"Use the format `{PREFIX}quit <game>` (e.g. `{PREFIX}quit guess`) to quit a game.")
+    elif not db.is_connected():
+        db = get_new_db_connection()
+        if db.is_connected():
+            print(f"Reconnected to database at {datetime.now()}")
+            ctx.send("Sorry, I was snoozing! Could you give your command again, please?")
+        else:
+            print(f"Failed to reconnect to database at {datetime.now()}")
+            ctx.send("Sorry, there's been an internal error")
     else: raise error
 
 def sql_escape_single_quotes(string):
