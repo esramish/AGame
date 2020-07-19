@@ -40,6 +40,9 @@ with open('5-letter_words.pkl', 'rb') as f:
 
 GAMES = ['guess']
 
+WIN_GUESS_REWARD = 100
+PLAY_GUESS_REWARD = 40
+
 @bot.event
 async def on_ready():
     print(f'{bot.user.name} has connected to Discord!')
@@ -58,6 +61,10 @@ async def onecopper(ctx):
     db.commit()
     await ctx.send(f"Here ya go! Balance: {balance}")
 
+@bot.command(name='listgames', help="Lists all the games the bot currently provides")
+async def list_games(ctx):
+    await ctx.send(', '.join(GAMES))
+
 @bot.command(name='start', help='Starts a new game')
 async def start_game(ctx, game):
     # make sure command is being given in a guild context
@@ -70,6 +77,12 @@ async def start_game(ctx, game):
         await ctx.send(f"**{game}** is not a game that can be started")
         return
     
+    # make sure the guild users table exists for this guild
+    try:
+        cursor.execute(f"SELECT * FROM guild{ctx.guild.id}users")
+    except: 
+        cursor.execute(f"CREATE TABLE guild{ctx.guild.id}users (id BIGINT PRIMARY KEY, username VARCHAR(255), playingguess BIT, votetoquitguess BIT)")
+
     guild_name = sql_escape_single_quotes(ctx.guild.name)
     cursor.execute(f"SELECT currword FROM guilds where id={ctx.guild.id}")
     query_result = cursor.fetchall()
@@ -106,9 +119,7 @@ async def guess(ctx, guess):
     guild_name = sql_escape_single_quotes(ctx.guild.name)
     cursor.execute(f"SELECT currword FROM guilds where id={ctx.guild.id}")
     query_result = cursor.fetchall()
-    if len(query_result) == 0: # guild's not in the database yet, so add them in with a null word, then complain to the user
-        cursor.execute(f"INSERT INTO guilds (id, guildname) VALUES ({ctx.guild.id}, '{guild_name}')")
-        db.commit()
+    if len(query_result) == 0: # guild is not in the guilds table yet, so complain to the user. We won't bother adding the guild to the guilds table here
         await ctx.send(f"There's no word-guessing game happening right now. Use `{PREFIX}start guess` to start one.")
         return
     else:
@@ -119,12 +130,52 @@ async def guess(ctx, guess):
     # okay, there is indeed a game going on at this point
     # use the word that's currently in the database for this guild
     word = query_result[0][0]
-    
-    if guess == word:
-        cursor.execute(f"UPDATE guilds SET currword = NULL where id = {ctx.guild.id}")
-        db.commit()
-        await ctx.send(f"<@!{ctx.author.id}> guessed it! The word was **{word}**. Good game! Use `{PREFIX}start guess` to start another.")
+
+    # make sure the user gets credit for participating in this game
+    cursor.execute(f"SELECT * FROM guild{ctx.guild.id}users WHERE id = {ctx.author.id}")
+    query_result = cursor.fetchall()
+    if len(query_result) == 0:
+        cursor.execute(f"INSERT INTO guild{ctx.guild.id}users (id, username, playingguess) VALUES ({ctx.author.id}, '{sql_escape_single_quotes(ctx.author.name)}', 1)")
     else:
+        cursor.execute(f"UPDATE guild{ctx.guild.id}users SET playingguess = 1 WHERE id = {ctx.author.id}")
+    
+    # and make sure the user is in the users table, so they can be rewarded at game end
+    author = sql_escape_single_quotes(ctx.author.name)
+    cursor.execute(f"SELECT balance FROM users where id={ctx.author.id}")
+    query_result = cursor.fetchall()
+    if len(query_result) == 0: # user's not in the users table yet, so add them in with balance of 0
+        cursor.execute(f"INSERT INTO users (id, username, balance) VALUES ({ctx.author.id}, '{author}', 0)")
+    db.commit()
+
+    # evaluate the guess
+    if guess == word: # winning guess!
+        cursor.execute(f"UPDATE guilds SET currword = NULL WHERE id = {ctx.guild.id}")
+        
+        # reward winner 
+        cursor.execute(f"UPDATE users SET balance = balance + {WIN_GUESS_REWARD} WHERE id = {ctx.author.id}")
+
+        # record other participants, for the sake of the message that'll be sent
+        cursor.execute(f"SELECT id FROM guild{ctx.guild.id}users WHERE (NOT id = {ctx.author.id}) AND playingguess = 1")
+        other_players_query = cursor.fetchall()
+        if len(other_players_query) > 0:
+            other_players = list(map(lambda player_tuple: str(player_tuple[0]), other_players_query)) # convert from list of 1-tuples to list of strings
+            mentions_string = "<@!" + ">, <@!".join(other_players) + f">: you win {PLAY_GUESS_REWARD} copper! "
+        else:
+            mentions_string = ""
+
+        # reward other participants
+        cursor.execute(f"UPDATE users SET balance = balance + {PLAY_GUESS_REWARD} WHERE (NOT id = {ctx.author.id}) AND id IN (SELECT id FROM guild{ctx.guild.id}users WHERE playingguess = 1)")
+        
+        # reset the list of who is playing the guess game
+        cursor.execute(f"UPDATE guild{ctx.guild.id}users SET playingguess = NULL")
+
+        # commit
+        db.commit()
+        
+        # send message to context
+        await ctx.send(f"<@!{ctx.author.id}>, you guessed it! The word was **{word}**. You win {WIN_GUESS_REWARD} copper! {mentions_string}")
+        await ctx.send(f"Good game! Use `{PREFIX}start guess` to start another.")
+    else: # not a winning guess
         await evaluate_word_guess(ctx, word, guess)
 
 async def evaluate_word_guess(ctx, word, guess):
@@ -170,12 +221,6 @@ async def quit_game(ctx, game, vote='yes'):
     if game not in GAMES:
         await ctx.send(f"**{game}** is not a game that can be quit")
         return
-    
-    # make sure the guild users table exists for this guild
-    try:
-        cursor.execute(f"SELECT * FROM guild{ctx.guild.id}users")
-    except: 
-        cursor.execute(f"CREATE TABLE guild{ctx.guild.id}users (id BIGINT PRIMARY KEY, username VARCHAR(255), votetoquitguess BIT)")
 
     # get info about the current states of the game/vote countdown in question
     # start by checking if the guild is in the guilds table
