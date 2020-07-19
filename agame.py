@@ -61,6 +61,27 @@ async def onecopper(ctx):
     db.commit()
     await ctx.send(f"Here ya go! Balance: {balance}")
 
+@bot.command(name='balance', help='Checks how much money you have')
+async def balance(ctx, user: discord.Member=None):
+    if user==None: 
+        user = ctx.author
+    username = sql_escape_single_quotes(user.name)
+    cursor.execute(f"SELECT balance FROM users where id={user.id}")
+    query_result = cursor.fetchall()
+    if len(query_result) == 0: # user's not in the database yet, so add them in with balance of 0
+        cursor.execute(f"INSERT INTO users (id, username, balance) VALUES ({user.id}, '{username}', 0)")
+        db.commit()
+        balance = 0
+    else:
+        balance = query_result[0][0]
+    await ctx.send(f"{user.name}'s balance: {balance}")
+
+@balance.error
+async def balance_error(ctx, error):
+    if isinstance(error, commands.errors.BadArgument):
+        await ctx.send(f"Use the format `{PREFIX}balance` to check your own balance, or use `{PREFIX}balance <user_mention>` (e.g. `{PREFIX}balance `<@!{bot.user.id}>` `) to check someone else's.")
+    else: raise error
+
 @bot.command(name='listgames', help="Lists all the games the bot currently provides")
 async def list_games(ctx):
     await ctx.send(', '.join(GAMES))
