@@ -1,6 +1,8 @@
 import os
 import pickle
 import random
+from datetime import datetime, timedelta
+import asyncio
 
 import discord
 from discord.ext import commands
@@ -11,7 +13,6 @@ TOKEN = os.getenv('DISCORD_TOKEN')
 PREFIX = os.getenv('AGAME_PREFIX')
 
 import mysql.connector 
-
 
 db = mysql.connector.connect(
     host=os.getenv('AGAME_DB_IP'),
@@ -29,20 +30,21 @@ except:
 try:
     cursor.execute("SELECT * FROM guilds")
 except: 
-    cursor.execute("CREATE TABLE guilds (id BIGINT PRIMARY KEY, guildname VARCHAR(255), currword VARCHAR(10))")
-    
-# client = discord.Client()
+    cursor.execute("CREATE TABLE guilds (id BIGINT PRIMARY KEY, guildname VARCHAR(255), currword VARCHAR(10), guessquitvotedeadline DATETIME)")
+
 bot = commands.Bot(command_prefix=PREFIX)
 
 # load 5-letter words
 with open('5-letter_words.pkl', 'rb') as f:
     FIVE_LETTER_WORDS = pickle.load(f)
 
+GAMES = ['guess']
+
 @bot.event
 async def on_ready():
     print(f'{bot.user.name} has connected to Discord!')
 
-@bot.command(name='gimmeacopper')
+@bot.command(name='gimmeacopper', help='What could this be???')
 async def onecopper(ctx):
     author = sql_escape_single_quotes(ctx.author.name)
     cursor.execute(f"SELECT balance FROM users where id={ctx.author.id}")
@@ -56,8 +58,18 @@ async def onecopper(ctx):
     db.commit()
     await ctx.send(f"Here ya go! Balance: {balance}")
 
-@bot.command(name='startguess')
-async def startguess(ctx):
+@bot.command(name='start', help='Starts a new game')
+async def start_game(ctx, game):
+    # make sure command is being given in a guild context
+    if ctx.guild == None:
+        await ctx.send(f"Using this command in a private chat is not allowed.")
+        return
+    
+    # check if valid command
+    if game not in GAMES:
+        await ctx.send(f"**{game}** is not a game that can be started")
+        return
+    
     guild_name = sql_escape_single_quotes(ctx.guild.name)
     cursor.execute(f"SELECT currword FROM guilds where id={ctx.guild.id}")
     query_result = cursor.fetchall()
@@ -70,26 +82,38 @@ async def startguess(ctx):
             cursor.execute(f"UPDATE guilds SET currword = '{word}' where id = {ctx.guild.id}")
             db.commit()
         else: # there's already a game going on, so complain to the user
-            await ctx.send(f"There's already a word-guessing game going on. Use `{PREFIX}guess word` to guess a word.")
+            await ctx.send(f"There's already a {game} game going on.")
+            if game=='guess':
+                await ctx.send(f"Use `{PREFIX}guess <word>` to guess a word.")
             return
     
     # here, we started a new game but haven't told the user anything yet
-    await ctx.send(f"New word-guessing game started! Use `{PREFIX}guess word` to guess a word.")
+    await ctx.send(f"New {game} game started! Use `{PREFIX}guess <word>` to guess a word, or `{PREFIX}quit guess` to initiate a vote to quit the game.")
 
+@start_game.error
+async def start_game_error(ctx, error):
+    if isinstance(error, commands.errors.MissingRequiredArgument):
+        await ctx.send(f"Use the format `{PREFIX}start <game>` (e.g. `{PREFIX}start guess`) to start a game.")
+    else: raise error
 
-@bot.command(name='guess')
+@bot.command(name='guess', help='Guesses a word in the 5-letter-word guessing game')
 async def guess(ctx, guess):
+    # make sure command is being given in a guild context
+    if ctx.guild == None:
+        await ctx.send(f"Using this command in a private chat is not allowed.")
+        return
+    
     guild_name = sql_escape_single_quotes(ctx.guild.name)
     cursor.execute(f"SELECT currword FROM guilds where id={ctx.guild.id}")
     query_result = cursor.fetchall()
     if len(query_result) == 0: # guild's not in the database yet, so add them in with a null word, then complain to the user
         cursor.execute(f"INSERT INTO guilds (id, guildname) VALUES ({ctx.guild.id}, '{guild_name}')")
         db.commit()
-        await ctx.send(f"There's no word-guessing game happening right now. Use `{PREFIX}startguess` to start one.")
+        await ctx.send(f"There's no word-guessing game happening right now. Use `{PREFIX}start guess` to start one.")
         return
     else:
         if query_result[0][0] == None: # the guild is in the database but doesn't have a current word, so complain to the user
-            await ctx.send(f"There's no word-guessing game happening right now. Use `{PREFIX}startguess` to start one.")
+            await ctx.send(f"There's no word-guessing game happening right now. Use `{PREFIX}start guess` to start one.")
             return
     
     # okay, there is indeed a game going on at this point
@@ -99,7 +123,7 @@ async def guess(ctx, guess):
     if guess == word:
         cursor.execute(f"UPDATE guilds SET currword = NULL where id = {ctx.guild.id}")
         db.commit()
-        await ctx.send(f"<@!{ctx.author.id}> guessed it! The word was **{word}**. Good game! Use `{PREFIX}startguess` to start another.")
+        await ctx.send(f"<@!{ctx.author.id}> guessed it! The word was **{word}**. Good game! Use `{PREFIX}start guess` to start another.")
     else:
         await evaluate_word_guess(ctx, word, guess)
 
@@ -132,7 +156,122 @@ async def evaluate_word_guess(ctx, word, guess):
 @guess.error
 async def guess_error(ctx, error):
     if isinstance(error, commands.errors.MissingRequiredArgument):
-        await ctx.send(f"Use the format `{PREFIX}guess word` to guess a word.")
+        await ctx.send(f"Use the format `{PREFIX}guess <word>` to guess a word.")
+    else: raise error
+
+@bot.command(name='quit', help='Initiates a vote to quit a current game')
+async def quit_game(ctx, game, vote='yes'):
+    # make sure command is being given in a guild context
+    if ctx.guild == None:
+        await ctx.send(f"Using this command in a private chat is not allowed.")
+        return
+
+    # check if valid command
+    if game not in GAMES:
+        await ctx.send(f"**{game}** is not a game that can be quit")
+        return
+    
+    # make sure the guild users table exists for this guild
+    try:
+        cursor.execute(f"SELECT * FROM guild{ctx.guild.id}users")
+    except: 
+        cursor.execute(f"CREATE TABLE guild{ctx.guild.id}users (id BIGINT PRIMARY KEY, username VARCHAR(255), votetoquitguess BIT)")
+
+    # get info about the current states of the game/vote countdown in question
+    # start by checking if the guild is in the guilds table
+    cursor.execute(f"SELECT currword FROM guilds WHERE id={ctx.guild.id}")
+    query_result = cursor.fetchall()
+    if len(query_result) == 0: # guild's not in the guilds table yet, which means there isn't a game going. We won't bother adding them here
+        await ctx.send(f"There's no {game} game going right now.")
+        return
+    
+    # okay, the guild is in the guilds table. Figure out if a game is going
+    if game == 'guess':
+        game_going = query_result[0][0] != None
+    # we can add more games with elifs here
+    if not game_going:
+        await ctx.send(f"There's no {game} game going on right now.")
+        return
+    
+    # okay, the game in question is going. Is there already a countdown to stop it?
+    cursor.execute(f"SELECT {game}quitvotedeadline FROM guilds WHERE id={ctx.guild.id}")
+    deadline = cursor.fetchone()[0]
+    if deadline == None: # there is no countdown going
+        # if the user voted no for some reason, don't start a countdown or store their vote
+        if vote.lower() == 'no':
+            await ctx.send(f"{ctx.author.name}, no one has voted to end this game yet anyway")
+            return
+        
+        # set all votes to null, except the person who gave the command
+        cursor.execute(f"UPDATE guild{ctx.guild.id}users SET votetoquit{game} = NULL")
+        db.commit()
+        cursor.execute(f"SELECT * from guild{ctx.guild.id}users WHERE id = {ctx.author.id}")
+        query_result = cursor.fetchall()
+        if len(query_result) == 0:
+            cursor.execute(f"INSERT INTO guild{ctx.guild.id}users (id, username, votetoquit{game}) VALUES ({ctx.author.id}, '{sql_escape_single_quotes(ctx.author.name)}', 1)")
+        else:
+            cursor.execute(f"UPDATE guild{ctx.guild.id}users SET votetoquit{game} = 1 WHERE id = {ctx.author.id}")
+        
+        # enter the voting deadline
+        deadline = datetime.strftime(datetime.now() + timedelta(minutes=1), '%Y-%m-%d %H:%M:%S')
+        cursor.execute(f"UPDATE guilds SET {game}quitvotedeadline = '{deadline}' where id={ctx.guild.id}")
+        
+        db.commit()
+
+        # send a message to the context
+        await ctx.send(f"**{ctx.author.name} votes to end the {game} game.** Use `{PREFIX}quit {game} <yes/no>` to vote for or against quitting the game. Votes will be tallied in 1 minute")
+
+        # start the timer
+        await quit_timer(ctx, game)
+
+        # return, so the rest of the function doesn't run once the vote is done
+        return
+    
+    # there was already a countdown going, so just record the author's vote
+    if vote.lower() == 'yes': 
+        wants_to_quit = 1
+    elif vote.lower() == 'no':
+        wants_to_quit = 0
+    else:
+        await ctx.send(f"{ctx.author.name}, I don't understand your vote. Please use the format `{PREFIX}quit {game} <yes/no>`")
+        return
+    # record vote
+    cursor.execute(f"SELECT * from guild{ctx.guild.id}users WHERE id = {ctx.author.id}")
+    query_result = cursor.fetchall()
+    if len(query_result) == 0:
+        cursor.execute(f"INSERT INTO guild{ctx.guild.id}users (id, username, votetoquit{game}) VALUES ({ctx.author.id}, '{sql_escape_single_quotes(ctx.author.name)}', {wants_to_quit})")
+    else:
+        cursor.execute(f"UPDATE guild{ctx.guild.id}users SET votetoquit{game} = {wants_to_quit} WHERE id = {ctx.author.id}")
+    db.commit()
+    await ctx.send(f"{ctx.author.name} votes to **{'quit' if wants_to_quit else 'continue'}** the {game} game")
+
+async def quit_timer(ctx, game):
+    await asyncio.sleep(60)
+    
+    # clear deadline in database
+    cursor.execute(f"UPDATE guilds SET {game}quitvotedeadline = NULL where id={ctx.guild.id}")
+    db.commit()
+    
+    # address the results
+    cursor.execute(f"SELECT votetoquit{game} FROM guild{ctx.guild.id}users")
+    results = cursor.fetchall()
+    yeas = list(filter(lambda query_row: query_row[0] == 1, results))
+    neas = list(filter(lambda query_row: query_row[0] == 0, results))
+    if len(yeas) > len(neas):   
+        await ctx.send(f"Time's up! The people have spoken: they've voted {len(yeas)}-{len(neas)} to **quit** the {game} game. Use `{PREFIX}start {game}` to start a new one")
+        if game=='guess':
+            cursor.execute(f"SELECT currword FROM guilds WHERE id={ctx.guild.id}")
+            await ctx.send(f"My word was **{cursor.fetchone()[0]}**")
+            cursor.execute(f"UPDATE guilds SET currword = NULL where id={ctx.guild.id}")
+            db.commit()
+    else: 
+        await ctx.send(f"Time's up! The people have spoken: they've voted {len(neas)}-{len(yeas)} to **continue** the {game} game.")
+
+@quit_game.error
+async def quit_game_error(ctx, error):
+    if isinstance(error, commands.errors.MissingRequiredArgument):
+        await ctx.send(f"Use the format `{PREFIX}quit <game>` (e.g. `{PREFIX}quit guess`) to quit a game.")
+    else: raise error
 
 def sql_escape_single_quotes(string):
     return string.replace("'", "''")
