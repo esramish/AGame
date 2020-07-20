@@ -447,6 +447,14 @@ async def codeword(ctx, word):
     cursor = get_cursor()
     cursor.execute("CREATE TABLE IF NOT EXISTS codewords (id INT PRIMARY KEY AUTO_INCREMENT, suggestor BIGINT, suggestionmsg BIGINT, word VARCHAR(45), approved BIT, suggestion_time DATETIME)")
     
+    # make sure the user is in the users table, so they can be rewarded if their suggestion is approved
+    author = sql_escape_single_quotes(ctx.author.name)
+    cursor.execute(f"SELECT balance FROM users where id={int(ctx.author.id)}")
+    query_result = cursor.fetchall()
+    if len(query_result) == 0: # user's not in the users table yet, so add them in with balance of 0
+        cursor.execute(f"INSERT INTO users (id, username, balance) VALUES ({int(ctx.author.id)}, '{author}', 0)")
+    db.commit()
+
     # format word, and escape word for SQL
     word = word.lower()
     unescaped_word = word
