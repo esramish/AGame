@@ -70,11 +70,14 @@ async def on_reaction_remove(reaction, user):
 async def codeword_reaction_checker(reaction, user):
     '''Given a reaction and the user who reacted, check if it was a codeword message reaction and process accordingly'''
 
+    # check if the reaction in question is the codeword vote emoji
+    if reaction.emoji != CODEWORD_VOTE_EMOJI: return
+
     # make sure codewords table exists
     cursor = get_cursor()
     cursor.execute("CREATE TABLE IF NOT EXISTS codewords (id INT PRIMARY KEY AUTO_INCREMENT, suggestor BIGINT, suggestionmsg BIGINT, word VARCHAR(45), approved BIT)")
 
-    # handle codeword vote reactions
+    # see if it was a reaction to a codeword suggestion message
     cursor.execute(f"SELECT id, suggestor, word, approved FROM codewords WHERE suggestionmsg = {int(reaction.message.id)}")
     query_result = cursor.fetchone()
     if query_result != None:
