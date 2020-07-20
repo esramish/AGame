@@ -30,7 +30,7 @@ def get_cursor():
     global db
     if not db.is_connected():
         db = get_new_db_connection()
-        print(f"Reconnected to database at {datetime.now()}")
+        print(f"Reconnected to database at {datetime.utcnow()}")
     return db.cursor(buffered=True)
 
 # make sure certain database tables exist
@@ -46,12 +46,69 @@ with open('5-letter_words.pkl', 'rb') as f:
 
 GAMES = ['guess']
 
+# guess
 WIN_GUESS_REWARD = 100
 PLAY_GUESS_REWARD = 40
+
+# codenames
+NUM_CODEWORD_REQ_VOTES = 2
+CODEWORD_VOTE_EMOJI = '👍'
+CODEWORD_REWARD = 10
 
 @bot.event
 async def on_ready():
     print(f'{bot.user.name} has connected to Discord!')
+
+@bot.event
+async def on_reaction_add(reaction, user):
+    await codeword_reaction_checker(reaction, user)
+
+@bot.event
+async def on_reaction_remove(reaction, user):
+    await codeword_reaction_checker(reaction, user)
+
+async def codeword_reaction_checker(reaction, user):
+    '''Given a reaction and the user who reacted, check if it was a codeword message reaction and process accordingly'''
+
+    # make sure codewords table exists
+    cursor = get_cursor()
+    cursor.execute("CREATE TABLE IF NOT EXISTS codewords (id INT PRIMARY KEY AUTO_INCREMENT, suggestor BIGINT, suggestionmsg BIGINT, word VARCHAR(45), approved BIT)")
+
+    # handle codeword vote reactions
+    cursor.execute(f"SELECT id, suggestor, word, approved FROM codewords WHERE suggestionmsg = {int(reaction.message.id)}")
+    query_result = cursor.fetchone()
+    if query_result != None:
+
+        # unpack query_result
+        word_id, suggestor_id, word, approved = query_result
+        
+        # make sure it's not already approved
+        if approved:
+            cursor.close()
+            return
+        
+        # count up all the non-AGame, non-suggestor users who have reacted to the message
+        reacted_users = await reaction.users().flatten()
+        filtered_reacted_users = list(filter(lambda u: not (u == bot.user or u.id == suggestor_id), reacted_users))
+        further_reactions_needed = NUM_CODEWORD_REQ_VOTES - len(filtered_reacted_users)
+        if further_reactions_needed == 0: # there are exactly (just another measure to help avoid doing this twice) enough votes for the word to pass:
+            # mark the word as approved in the database
+            cursor.execute(f"UPDATE codewords SET approved = 1 WHERE id = {word_id}")
+
+            # reward the user
+            cursor.execute(f"UPDATE users SET balance = balance + {CODEWORD_REWARD} WHERE id = {suggestor_id}")
+
+            # commit
+            db.commit()
+
+            # send a message notifying of the approval and reward
+            await reaction.message.channel.send(f"Added the word **{word}** to codenames. {CODEWORD_REWARD} copper to {bot.get_user(suggestor_id).display_name} for the suggestion!")
+        if further_reactions_needed >= 0: 
+            # update the message with the number of further reactions needed
+            further_reactions_needed = NUM_CODEWORD_REQ_VOTES - len(filtered_reacted_users)
+            await reaction.message.edit(content=f"React {CODEWORD_VOTE_EMOJI} to this message to approve the codenames word **{word}**! {further_reactions_needed} more vote{'s' if further_reactions_needed != 1 else ''} needed")
+
+    cursor.close()
 
 @bot.command(name='gimmeacopper', help='What could this be???')
 async def onecopper(ctx):
@@ -304,7 +361,7 @@ async def quit_game(ctx, game, vote='yes'):
             cursor.execute(f"UPDATE guild{ctx.guild.id}users SET votetoquit{game} = 1 WHERE id = {ctx.author.id}")
         
         # enter the voting deadline
-        deadline = datetime.strftime(datetime.now() + timedelta(minutes=1), '%Y-%m-%d %H:%M:%S')
+        deadline = datetime.strftime(datetime.utcnow() + timedelta(minutes=1), '%Y-%m-%d %H:%M:%S')
         cursor.execute(f"UPDATE guilds SET {game}quitvotedeadline = '{deadline}' where id={ctx.guild.id}")
         
         db.commit()
@@ -374,6 +431,54 @@ async def quit_timer(ctx, game):
 async def quit_game_error(ctx, error):
     if isinstance(error, commands.errors.MissingRequiredArgument):
         await ctx.send(f"Use the format `{PREFIX}quit <game>` (e.g. `{PREFIX}quit guess`) to quit a game.")
+    else: raise error
+
+@bot.command(help='Suggests a word to be added to the list of codenames words')
+async def codeword(ctx, word):
+    # make sure command is being given in a guild context
+    if ctx.guild == None:
+        await ctx.send(f"Using this command in a private chat is not allowed.")
+        return
+    
+    # make sure table exists
+    cursor = get_cursor()
+    cursor.execute("CREATE TABLE IF NOT EXISTS codewords (id INT PRIMARY KEY AUTO_INCREMENT, suggestor BIGINT, suggestionmsg BIGINT, word VARCHAR(45), approved BIT, suggestion_time DATETIME)")
+    
+    # format word, and escape word for SQL
+    word = word.lower()
+    unescaped_word = word
+    word = sql_escape_single_quotes(word)
+    
+    # check if word was recently suggested or already approved
+    cursor.execute(f"SELECT suggestion_time, approved FROM codewords WHERE word='{word}'")
+    query_result = cursor.fetchone()
+    if query_result != None:
+        suggestion_time, approved = query_result
+        if approved:
+            await ctx.send(f"Someone already added the word **{unescaped_word}**")
+            cursor.close()
+            return
+        elif datetime.utcnow() - suggestion_time < timedelta(days=1):
+            await ctx.send(f"Someone already suggested the word **{unescaped_word}**. If it still isn't approved in 24 hours, try suggesting it again")
+            cursor.close()
+            return
+        else: # there is an entry for this word in the database, but it's old an unapproved, so let's delete it and let the user add a new one
+            cursor.execute(f"DELETE FROM codewords WHERE word='{word}'")
+            db.commit()
+
+    # send voting message
+    message = await ctx.send(f"React {CODEWORD_VOTE_EMOJI} to this message to approve the codenames word **{word}**! {NUM_CODEWORD_REQ_VOTES} more vote{'s' if NUM_CODEWORD_REQ_VOTES != 1 else ''} needed")
+    await message.add_reaction(CODEWORD_VOTE_EMOJI)
+
+    # insert word candidate into database
+    cursor.execute(f"INSERT INTO codewords (suggestor, suggestionmsg, word, approved, suggestion_time) VALUES ({int(ctx.author.id)}, {int(message.id)}, '{word}', 0, '{datetime.strftime(datetime.utcnow(), '%Y-%m-%d %H:%M:%S')}')")
+    db.commit()
+    cursor.close()
+
+@codeword.error
+async def codeword_error(ctx, error):
+    if isinstance(error, commands.errors.MissingRequiredArgument):
+        await ctx.send(f"Use the format `{PREFIX}codeword <word>` (e.g. `{PREFIX}codeword computer`) to suggest a codenames word.")
     else: raise error
 
 def sql_escape_single_quotes(string):
