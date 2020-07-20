@@ -1,6 +1,7 @@
 import pickle
 
 NUM_LETTERS = 5
+ADDITIONAL_WORDS = ['blind', 'antsy']
 
 def main():
     valid_words = []
@@ -16,6 +17,8 @@ def main():
                 chars.add(char)
             if len(chars) == NUM_LETTERS: valid_words.append(word)
     
+    valid_words += ADDITIONAL_WORDS
+
     with open(f"{NUM_LETTERS}-letter_words.pkl", 'wb') as output_file:
         pickle.dump(valid_words, output_file, pickle.HIGHEST_PROTOCOL)            
 
