@@ -36,7 +36,9 @@ def get_cursor():
 # make sure certain database tables exist
 with get_cursor() as cursor:
     cursor.execute("CREATE TABLE IF NOT EXISTS users (id BIGINT PRIMARY KEY, username VARCHAR(255), balance INT)")
-    cursor.execute("CREATE TABLE IF NOT EXISTS guilds (id BIGINT PRIMARY KEY, guildname VARCHAR(255), currword VARCHAR(10), guessquitvotedeadline DATETIME)")
+    cursor.execute("CREATE TABLE IF NOT EXISTS guilds (id BIGINT PRIMARY KEY, guildname VARCHAR(255), currword VARCHAR(10), guessquitvotedeadline DATETIME, codenamesstartmsg BIGINT, codenamesquitvotedeadline DATETIME)")
+    cursor.execute("CREATE TABLE IF NOT EXISTS codewords (id INT PRIMARY KEY AUTO_INCREMENT, suggestor BIGINT, suggestionmsg BIGINT, word VARCHAR(45), approved BIT)")
+    cursor.execute("CREATE TABLE IF NOT EXISTS activeCodewords (id INT PRIMARY KEY AUTO_INCREMENT, guild BIGINT, word VARCHAR(45), color varchar(10), revealed BIT)")
 
 bot = commands.Bot(command_prefix=PREFIX)
 
@@ -44,7 +46,8 @@ bot = commands.Bot(command_prefix=PREFIX)
 with open('5-letter_words.pkl', 'rb') as f:
     FIVE_LETTER_WORDS = pickle.load(f)
 
-GAMES = ['guess']
+GAMES = ['guess', 'codenames']
+CANCELABLE_GAMES = ['codenames']
 
 # guess
 WIN_GUESS_REWARD = 100
@@ -54,6 +57,10 @@ PLAY_GUESS_REWARD = 40
 NUM_CODEWORD_REQ_VOTES = 2
 CODEWORD_VOTE_EMOJI = '👍'
 CODEWORD_REWARD = 10
+BLUE_SPY_EMOJI = '🖌'
+RED_SPY_EMOJI = '📕'
+BLUE_OP_EMOJI = '💙'
+RED_OP_EMOJI = '🔴'
 
 @bot.event
 async def on_ready():
@@ -73,9 +80,7 @@ async def codeword_reaction_checker(reaction, user):
     # check if the reaction in question is the codeword vote emoji
     if reaction.emoji != CODEWORD_VOTE_EMOJI: return
 
-    # make sure codewords table exists
     cursor = get_cursor()
-    cursor.execute("CREATE TABLE IF NOT EXISTS codewords (id INT PRIMARY KEY AUTO_INCREMENT, suggestor BIGINT, suggestionmsg BIGINT, word VARCHAR(45), approved BIT)")
 
     # see if it was a reaction to a codeword suggestion message
     cursor.execute(f"SELECT id, suggestor, word, approved FROM codewords WHERE suggestionmsg = {int(reaction.message.id)}")
@@ -169,11 +174,19 @@ async def start_game(ctx, game):
         await ctx.send(f"**{game}** is not a game that can be started")
         return
     
-    cursor = get_cursor()
-
     # make sure the guild users table exists for this guild
-    cursor.execute(f"CREATE TABLE IF NOT EXISTS guild{ctx.guild.id}users (id BIGINT PRIMARY KEY, username VARCHAR(255), playingguess BIT, votetoquitguess BIT)")
+    cursor = get_cursor()
+    cursor.execute(f"CREATE TABLE IF NOT EXISTS guild{ctx.guild.id}users (id BIGINT PRIMARY KEY, playingguess BIT, votetoquitguess BIT, votetoquitcodenames BIT, codenamesroleandcolor VARCHAR(20))")
+    cursor.close()
 
+    if game=='guess':
+        await start_guess(ctx)
+    elif game=='codenames':
+        await start_codenames(ctx)
+
+async def start_guess(ctx):
+    cursor = get_cursor()
+    
     guild_name = sql_escape_single_quotes(ctx.guild.name)
     cursor.execute(f"SELECT currword FROM guilds where id={ctx.guild.id}")
     query_result = cursor.fetchall()
@@ -186,20 +199,120 @@ async def start_game(ctx, game):
             cursor.execute(f"UPDATE guilds SET currword = '{word}' where id = {ctx.guild.id}")
             db.commit()
         else: # there's already a game going on, so complain to the user
-            await ctx.send(f"There's already a {game} game going on.")
-            if game=='guess':
-                await ctx.send(f"Use `{PREFIX}guess <word>` to guess a word.")
+            await ctx.send(f"There's already a guess game going on. Use `{PREFIX}guess <word>` to guess a word.")
             cursor.close()
             return
 
     # here, we started a new game but haven't told the user anything yet
     cursor.close()
-    await ctx.send(f"New {game} game started! Use `{PREFIX}guess <word>` to guess a word, or `{PREFIX}quit guess` to initiate a vote to quit the game.")
+    await ctx.send(f"New guess game started! Use `{PREFIX}guess <word>` to guess a word, or `{PREFIX}quit guess` to initiate a vote to quit the game.")
+
+async def start_codenames(ctx):
+    cursor = get_cursor()
+    guild_id = int(ctx.guild.id)
+    guild_name = sql_escape_single_quotes(ctx.guild.name)
+
+    # make sure there's not already a game going
+    cursor.execute(f"SELECT * FROM activeCodewords WHERE guild = {guild_id}")
+    query_result = cursor.fetchone()
+    if query_result != None:
+        await ctx.send("There's already a codenames game in progress on this server--sorry!")
+        cursor.close()
+        return
+
+    cursor.execute(f"SELECT codenamesstartmsg FROM guilds WHERE id = {guild_id}")
+    query_result = cursor.fetchone()
+    
+    if query_result == None: # make sure the guild is in the guilds table
+        cursor.execute(f"INSERT INTO guilds (id, guildname) VALUES ({ctx.guild.id}, '{guild_name}')")
+        db.commit()
+    elif query_result[0] != None: # make sure there's not already a start-game going
+        await ctx.send(f"It seems someone else is already trying to start codenames on this server. If this is not the case, use `{PREFIX}cancel codenames` before giving this command again")
+        cursor.close()
+        return
+
+    # send a message indicating the allowed role combiniations and seeking reactions to assign roles
+    embed = discord.Embed(title="Welcome to Codenames!", description=f"Following the instructions in the `Role Reactions` section, everyone who wants to play must assign themselves a role. No more than one spymaster of either color. If only one spymaster is selected, you'll play a cooperative game; if both are selected, you'll play a competitive game. Use `{PREFIX}begin codenames` to begin the game once everyone is ready.", color=16711935) # magenta
+    embed.add_field(name="Role Reactions", value=f"React with the role you want to have in this game: \n\n{BLUE_SPY_EMOJI} - blue spymaster \n{RED_SPY_EMOJI} - red spymaster \n{BLUE_OP_EMOJI} - blue operatives \n{RED_OP_EMOJI} - red operatives \n\nIf there is only one spymaster, it doesn't matter which of the two operative reactions everyone else selects. Two spymasters and only one operative means the operative guesses for both teams.", inline=False)
+    embed.set_footer(text=f"Use \"{PREFIX}cancel codenames\" to cancel game start")
+    message = await ctx.send(embed=embed)
+
+    # get the id of this message and store it in the guilds table
+    cursor.execute(f"UPDATE guilds SET codenamesstartmsg = {int(message.id)} WHERE id = {guild_id}")
+    db.commit()
+
+    # set up the reactions
+    await message.add_reaction(BLUE_SPY_EMOJI)
+    await message.add_reaction(RED_SPY_EMOJI)
+    await message.add_reaction(BLUE_OP_EMOJI)
+    await message.add_reaction(RED_OP_EMOJI)
+
+    cursor.close()
 
 @start_game.error
 async def start_game_error(ctx, error):
     if isinstance(error, commands.errors.MissingRequiredArgument):
         await ctx.send(f"Use the format `{PREFIX}start <game>` (e.g. `{PREFIX}start guess`) to start a game.")
+    else: raise error
+
+@bot.command(name='begin', help='Begins a game that has been set up')
+async def begin_game(ctx, game):
+    
+    # make sure command is being given in a guild context
+    if ctx.guild == None:
+        await ctx.send(f"Using this command in a private chat is not allowed.")
+        return
+
+    # check if valid command
+    if game not in CANCELABLE_GAMES:
+        await ctx.send(f"**{game}** is not a game that can be \"begun.\" If you're simply trying to start a game, use `{PREFIX}start {game}`")
+        return
+
+    cursor = get_cursor()
+
+    # get info about the current state of the game
+    # start by checking if the guild is in the guilds table
+    cursor.execute(f"SELECT codenamesstartmsg FROM guilds WHERE id={ctx.guild.id}")
+    query_result = cursor.fetchone()
+    if query_result == None: # guild's not in the guilds table yet, which means there isn't a game in the process of starting. We won't bother adding them here
+        await ctx.send(f"There's no {game} game in the process of starting right now.")
+        cursor.close()
+        return
+    
+    cursor.close()
+
+    # okay, if there's a game starting, cancel it and send an informative message
+    game_begun = False
+    if game=='codenames':
+        if query_result[0] != None:
+            game_begun = True
+            await begin_codenames(ctx)
+    # can add more games with elifs here
+
+    if not game_begun:
+        await ctx.send(f"There is no {game} game in the process of starting right now. If you're trying to start that process, use `{PREFIX}start {game}`")
+
+async def begin_codenames(ctx):
+    
+    # make sure there is at least 1 spymaster and 1 operative
+
+    # make sure there is no more than one spymaster of either color
+
+
+    cursor = get_cursor()
+
+    # assign users their new roles in the appropriate guild users table (making them all operatives of the spymaster's color in a cooperative game, and making the operative both colors in a competitive 3-player game)
+
+    # remove the game start message id from the guilds table
+    cursor.execute(f"UPDATE guilds SET codenamesstartmsg = NULL WHERE id = {int(ctx.guild.id)}")
+    db.commit()
+
+    cursor.close()
+
+@begin_game.error
+async def begin_game_error(ctx, error):
+    if isinstance(error, commands.errors.MissingRequiredArgument):
+        await ctx.send(f"Use the format `{PREFIX}begin <game>` (e.g. `{PREFIX}begin codenames`) to begin a game that's ready.")
     else: raise error
 
 @bot.command(name='guess', help='Guesses a word in the 5-letter-word guessing game')
@@ -233,7 +346,7 @@ async def guess(ctx, guess):
     cursor.execute(f"SELECT * FROM guild{ctx.guild.id}users WHERE id = {ctx.author.id}")
     query_result = cursor.fetchall()
     if len(query_result) == 0:
-        cursor.execute(f"INSERT INTO guild{ctx.guild.id}users (id, username, playingguess) VALUES ({ctx.author.id}, '{sql_escape_single_quotes(ctx.author.name)}', 1)")
+        cursor.execute(f"INSERT INTO guild{ctx.guild.id}users (id, playingguess) VALUES ({ctx.author.id}, 1)")
     else:
         cursor.execute(f"UPDATE guild{ctx.guild.id}users SET playingguess = 1 WHERE id = {ctx.author.id}")
     
@@ -328,15 +441,19 @@ async def quit_game(ctx, game, vote='yes'):
     # get info about the current states of the game/vote countdown in question
     # start by checking if the guild is in the guilds table
     cursor.execute(f"SELECT currword FROM guilds WHERE id={ctx.guild.id}")
-    query_result = cursor.fetchall()
-    if len(query_result) == 0: # guild's not in the guilds table yet, which means there isn't a game going. We won't bother adding them here
+    query_result = cursor.fetchone()
+    if query_result == None: # guild's not in the guilds table yet, which means there isn't a game going. We won't bother adding them here
         await ctx.send(f"There's no {game} game going right now.")
         cursor.close()
         return
     
     # okay, the guild is in the guilds table. Figure out if a game is going
     if game == 'guess':
-        game_going = query_result[0][0] != None
+        game_going = query_result[0] != None
+    elif game == 'codenames':
+        cursor.execute(f"SELECT * FROM activeCodewords WHERE guild = {ctx.guild.id}")
+        query_result = cursor.fetchone()
+        game_going = query_result != None
     # we can add more games with elifs here
     if not game_going:
         await ctx.send(f"There's no {game} game going on right now.")
@@ -359,7 +476,7 @@ async def quit_game(ctx, game, vote='yes'):
         cursor.execute(f"SELECT * from guild{ctx.guild.id}users WHERE id = {ctx.author.id}")
         query_result = cursor.fetchall()
         if len(query_result) == 0:
-            cursor.execute(f"INSERT INTO guild{ctx.guild.id}users (id, username, votetoquit{game}) VALUES ({ctx.author.id}, '{sql_escape_single_quotes(ctx.author.name)}', 1)")
+            cursor.execute(f"INSERT INTO guild{ctx.guild.id}users (id, votetoquit{game}) VALUES ({ctx.author.id}, 1)")
         else:
             cursor.execute(f"UPDATE guild{ctx.guild.id}users SET votetoquit{game} = 1 WHERE id = {ctx.author.id}")
         
@@ -391,7 +508,7 @@ async def quit_game(ctx, game, vote='yes'):
     cursor.execute(f"SELECT * from guild{ctx.guild.id}users WHERE id = {ctx.author.id}")
     query_result = cursor.fetchall()
     if len(query_result) == 0:
-        cursor.execute(f"INSERT INTO guild{ctx.guild.id}users (id, username, votetoquit{game}) VALUES ({ctx.author.id}, '{sql_escape_single_quotes(ctx.author.name)}', {wants_to_quit})")
+        cursor.execute(f"INSERT INTO guild{ctx.guild.id}users (id, votetoquit{game}) VALUES ({ctx.author.id}, {wants_to_quit})")
     else:
         cursor.execute(f"UPDATE guild{ctx.guild.id}users SET votetoquit{game} = {wants_to_quit} WHERE id = {ctx.author.id}")
     
@@ -425,6 +542,9 @@ async def quit_timer(ctx, game):
             await ctx.send(f"My word was **{cursor.fetchone()[0]}**")
             cursor.execute(f"UPDATE guilds SET currword = NULL where id={ctx.guild.id}")
             db.commit()
+        elif game=='codenames':
+            pass # TODO
+        # can add more games here with elifs
     else: 
         await ctx.send(f"Time's up! The people have spoken: they've voted {len(neas)}-{len(yeas)} to **continue** the {game} game.")
     
@@ -436,6 +556,50 @@ async def quit_game_error(ctx, error):
         await ctx.send(f"Use the format `{PREFIX}quit <game>` (e.g. `{PREFIX}quit guess`) to quit a game.")
     else: raise error
 
+@bot.command(name='cancel', help='Cancels the start process for a game')
+async def cancel_game(ctx, game):
+    # make sure command is being given in a guild context
+    if ctx.guild == None:
+        await ctx.send(f"Using this command in a private chat is not allowed.")
+        return
+
+    # check if valid command
+    if game not in CANCELABLE_GAMES:
+        await ctx.send(f"**{game}** is not a game that can be cancelled. If you're trying to quit an in-progress game, use `{PREFIX}quit {game}`")
+        return
+
+    cursor = get_cursor()
+
+    # get info about the current state of the game
+    # start by checking if the guild is in the guilds table
+    cursor.execute(f"SELECT codenamesstartmsg FROM guilds WHERE id={ctx.guild.id}")
+    query_result = cursor.fetchone()
+    if query_result == None: # guild's not in the guilds table yet, which means there isn't a game in the process of starting. We won't bother adding them here
+        await ctx.send(f"There's no {game} game in the process of starting right now.")
+        cursor.close()
+        return
+    
+    # okay, if there's a game starting, cancel it and send an informative message
+    game_cancelled = False
+    if game=='codenames':
+        if query_result[0] != None:
+            cursor.execute(f"UPDATE guilds SET codenamesstartmsg = NULL WHERE id={ctx.guild.id}")
+            db.commit()
+            game_cancelled = True
+    # can add more games with elifs here
+
+    if game_cancelled:
+        await ctx.send(f"{game} game cancelled. Use `{PREFIX}start {game}` to restart")
+    else:
+        await ctx.send(f"There is no {game} game in the process of starting right now. If you're trying to quit an in-progress game, use `{PREFIX}quit {game}`")
+    cursor.close()
+
+@cancel_game.error
+async def cancel_game_error(ctx, error):
+    if isinstance(error, commands.errors.MissingRequiredArgument):
+        await ctx.send(f"Use the format `{PREFIX}cancel <game>` (e.g. `{PREFIX}cancel codenames`) to cancel a game start.")
+    else: raise error
+
 @bot.command(help='Suggests a word to be added to the list of codenames words')
 async def codeword(ctx, word):
     # make sure command is being given in a guild context
@@ -443,9 +607,7 @@ async def codeword(ctx, word):
         await ctx.send(f"Using this command in a private chat is not allowed.")
         return
     
-    # make sure table exists
     cursor = get_cursor()
-    cursor.execute("CREATE TABLE IF NOT EXISTS codewords (id INT PRIMARY KEY AUTO_INCREMENT, suggestor BIGINT, suggestionmsg BIGINT, word VARCHAR(45), approved BIT, suggestion_time DATETIME)")
     
     # make sure the user is in the users table, so they can be rewarded if their suggestion is approved
     author = sql_escape_single_quotes(ctx.author.name)
