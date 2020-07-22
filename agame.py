@@ -222,7 +222,7 @@ async def guess(ctx, guess):
     else:
         if query_result[0][0] == None: # the guild is in the database but doesn't have a current word, so complain to the user
             await ctx.send(f"There's no word-guessing game happening right now. Use `{PREFIX}start guess` to start one.")
-            cursor.closee()
+            cursor.close()
             return
     
     # okay, there is indeed a game going on at this point
