@@ -37,6 +37,7 @@ def get_cursor():
 with get_cursor() as cursor:
     cursor.execute("CREATE TABLE IF NOT EXISTS users (id BIGINT PRIMARY KEY, username VARCHAR(255), balance INT)")
     cursor.execute("CREATE TABLE IF NOT EXISTS guilds (id BIGINT PRIMARY KEY, guildname VARCHAR(255), currword VARCHAR(10), guessquitvotedeadline DATETIME, codenamesstartmsg BIGINT, codenamesquitvotedeadline DATETIME)")
+    cursor.execute("CREATE TABLE IF NOT EXISTS members (id INT PRIMARY KEY AUTO_INCREMENT, user BIGINT, guild BIGINT, votetoquitguess BIT, playingguess BIT, votetoquitcodenames BIT, codenamesroleandcolor VARCHAR(20))")
     cursor.execute("CREATE TABLE IF NOT EXISTS codewords (id INT PRIMARY KEY AUTO_INCREMENT, suggestor BIGINT, suggestionmsg BIGINT, word VARCHAR(45), approved BIT)")
     cursor.execute("CREATE TABLE IF NOT EXISTS activeCodewords (id INT PRIMARY KEY AUTO_INCREMENT, guild BIGINT, word VARCHAR(45), color varchar(10), revealed BIT)")
 
@@ -173,11 +174,6 @@ async def start_game(ctx, game):
     if game not in GAMES:
         await ctx.send(f"**{game}** is not a game that can be started")
         return
-    
-    # make sure the guild users table exists for this guild
-    cursor = get_cursor()
-    cursor.execute(f"CREATE TABLE IF NOT EXISTS guild{ctx.guild.id}users (id BIGINT PRIMARY KEY, playingguess BIT, votetoquitguess BIT, votetoquitcodenames BIT, codenamesroleandcolor VARCHAR(20))")
-    cursor.close()
 
     if game=='guess':
         await start_guess(ctx)
@@ -294,10 +290,13 @@ async def begin_game(ctx, game):
 
 async def begin_codenames(ctx):
     
+    # make sure no user is already in a codenames game on another server
+
     # make sure there is at least 1 spymaster and 1 operative
 
     # make sure there is no more than one spymaster of either color
 
+    # if there are two spymasters and multiple operatives, make sure there's at least one operative of both colors
 
     cursor = get_cursor()
 
@@ -343,12 +342,12 @@ async def guess(ctx, guess):
     word = query_result[0][0]
 
     # make sure the user gets credit for participating in this game
-    cursor.execute(f"SELECT * FROM guild{ctx.guild.id}users WHERE id = {ctx.author.id}")
+    cursor.execute(f"SELECT * FROM members WHERE user = {ctx.author.id} AND guild = {ctx.guild.id}")
     query_result = cursor.fetchall()
     if len(query_result) == 0:
-        cursor.execute(f"INSERT INTO guild{ctx.guild.id}users (id, playingguess) VALUES ({ctx.author.id}, 1)")
+        cursor.execute(f"INSERT INTO members (user, guild, playingguess) VALUES ({ctx.author.id}, {ctx.guild.id}, 1)")
     else:
-        cursor.execute(f"UPDATE guild{ctx.guild.id}users SET playingguess = 1 WHERE id = {ctx.author.id}")
+        cursor.execute(f"UPDATE members SET playingguess = 1 WHERE user = {ctx.author.id} AND guild = {ctx.guild.id}")
     
     # and make sure the user is in the users table, so they can be rewarded at game end
     author = sql_escape_single_quotes(ctx.author.name)
@@ -366,7 +365,7 @@ async def guess(ctx, guess):
         cursor.execute(f"UPDATE users SET balance = balance + {WIN_GUESS_REWARD} WHERE id = {ctx.author.id}")
 
         # record other participants, for the sake of the message that'll be sent
-        cursor.execute(f"SELECT id FROM guild{ctx.guild.id}users WHERE (NOT id = {ctx.author.id}) AND playingguess = 1")
+        cursor.execute(f"SELECT user FROM members WHERE (NOT user = {ctx.author.id}) AND guild = {ctx.guild.id} AND playingguess = 1")
         other_players_query = cursor.fetchall()
         if len(other_players_query) > 0:
             other_players = list(map(lambda player_tuple: str(player_tuple[0]), other_players_query)) # convert from list of 1-tuples to list of strings
@@ -375,10 +374,10 @@ async def guess(ctx, guess):
             mentions_string = ""
 
         # reward other participants
-        cursor.execute(f"UPDATE users SET balance = balance + {PLAY_GUESS_REWARD} WHERE (NOT id = {ctx.author.id}) AND id IN (SELECT id FROM guild{ctx.guild.id}users WHERE playingguess = 1)")
+        cursor.execute(f"UPDATE users SET balance = balance + {PLAY_GUESS_REWARD} WHERE (NOT id = {ctx.author.id}) AND id IN (SELECT user FROM members WHERE guild = {ctx.guild.id} AND playingguess = 1)")
         
         # reset the list of who is playing the guess game
-        cursor.execute(f"UPDATE guild{ctx.guild.id}users SET playingguess = NULL")
+        cursor.execute(f"UPDATE members SET playingguess = NULL WHERE guild = {ctx.guild.id}")
 
         # commit and close
         db.commit()
@@ -471,14 +470,14 @@ async def quit_game(ctx, game, vote='yes'):
             return
         
         # set all votes to null, except the person who gave the command
-        cursor.execute(f"UPDATE guild{ctx.guild.id}users SET votetoquit{game} = NULL")
+        cursor.execute(f"UPDATE members SET votetoquit{game} = NULL WHERE guild = {ctx.guild.id}")
         db.commit()
-        cursor.execute(f"SELECT * from guild{ctx.guild.id}users WHERE id = {ctx.author.id}")
+        cursor.execute(f"SELECT * from members WHERE user = {ctx.author.id} AND guild = {ctx.guild.id}")
         query_result = cursor.fetchall()
         if len(query_result) == 0:
-            cursor.execute(f"INSERT INTO guild{ctx.guild.id}users (id, votetoquit{game}) VALUES ({ctx.author.id}, 1)")
+            cursor.execute(f"INSERT INTO members (user, guild, votetoquit{game}) VALUES ({ctx.author.id}, {ctx.guild.id}, 1)")
         else:
-            cursor.execute(f"UPDATE guild{ctx.guild.id}users SET votetoquit{game} = 1 WHERE id = {ctx.author.id}")
+            cursor.execute(f"UPDATE members SET votetoquit{game} = 1 WHERE user = {ctx.author.id} AND guild = {ctx.guild.id}")
         
         # enter the voting deadline
         deadline = datetime.strftime(datetime.utcnow() + timedelta(minutes=1), '%Y-%m-%d %H:%M:%S')
@@ -505,12 +504,12 @@ async def quit_game(ctx, game, vote='yes'):
         await ctx.send(f"{ctx.author.name}, I don't understand your vote. Please use the format `{PREFIX}quit {game} <yes/no>`")
         return
     # record vote
-    cursor.execute(f"SELECT * from guild{ctx.guild.id}users WHERE id = {ctx.author.id}")
+    cursor.execute(f"SELECT * from members WHERE user = {ctx.author.id} AND guild = {ctx.guild.id}")
     query_result = cursor.fetchall()
     if len(query_result) == 0:
-        cursor.execute(f"INSERT INTO guild{ctx.guild.id}users (id, votetoquit{game}) VALUES ({ctx.author.id}, {wants_to_quit})")
+        cursor.execute(f"INSERT INTO members (user, guild, votetoquit{game}) VALUES ({ctx.author.id}, {ctx.guild.id}, {wants_to_quit})")
     else:
-        cursor.execute(f"UPDATE guild{ctx.guild.id}users SET votetoquit{game} = {wants_to_quit} WHERE id = {ctx.author.id}")
+        cursor.execute(f"UPDATE members SET votetoquit{game} = {wants_to_quit} WHERE user = {ctx.author.id} AND guild = {ctx.guild.id}")
     
     db.commit()
     cursor.close()
@@ -523,11 +522,11 @@ async def quit_timer(ctx, game):
     cursor = get_cursor()
 
     # clear deadline in database
-    cursor.execute(f"UPDATE guilds SET {game}quitvotedeadline = NULL where id={ctx.guild.id}")
+    cursor.execute(f"UPDATE guilds SET {game}quitvotedeadline = NULL WHERE id={ctx.guild.id}")
     db.commit()
     
     # address the results
-    cursor.execute(f"SELECT votetoquit{game} FROM guild{ctx.guild.id}users")
+    cursor.execute(f"SELECT votetoquit{game} FROM members WHERE guild = {ctx.guild.id}")
     results = cursor.fetchall()
     yeas = list(filter(lambda query_row: query_row[0] == 1, results))
     neas = list(filter(lambda query_row: query_row[0] == 0, results))
@@ -535,7 +534,7 @@ async def quit_timer(ctx, game):
         await ctx.send(f"Time's up! The people have spoken: they've voted {len(yeas)}-{len(neas)} to **quit** the {game} game. Use `{PREFIX}start {game}` to start a new one")
         if game=='guess':
             # reset the list of who is playing the guess game
-            cursor.execute(f"UPDATE guild{ctx.guild.id}users SET playingguess = NULL")
+            cursor.execute(f"UPDATE members SET playingguess = NULL WHERE guild = {ctx.guild.id}")
             
             # send the secret word in a message, then clear the word
             cursor.execute(f"SELECT currword FROM guilds WHERE id={ctx.guild.id}")
