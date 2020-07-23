@@ -37,7 +37,7 @@ def get_cursor():
 with get_cursor() as cursor:
     cursor.execute("CREATE TABLE IF NOT EXISTS users (id BIGINT PRIMARY KEY, username VARCHAR(255), balance INT)")
     cursor.execute("CREATE TABLE IF NOT EXISTS guilds (id BIGINT PRIMARY KEY, guildname VARCHAR(255), currword VARCHAR(10), guessquitvotedeadline DATETIME, codenamesstartmsg BIGINT, codenamesquitvotedeadline DATETIME)")
-    cursor.execute("CREATE TABLE IF NOT EXISTS members (id INT PRIMARY KEY AUTO_INCREMENT, user BIGINT, guild BIGINT, votetoquitguess BIT, playingguess BIT, votetoquitcodenames BIT, codenamesroleandcolor VARCHAR(20))")
+    cursor.execute("CREATE TABLE IF NOT EXISTS members (id INT PRIMARY KEY AUTO_INCREMENT, user BIGINT NOT NULL, guild BIGINT NOT NULL, votetoquitguess BIT, playingguess BIT, votetoquitcodenames BIT, codenamesroleandcolor VARCHAR(25))")
     cursor.execute("CREATE TABLE IF NOT EXISTS codewords (id INT PRIMARY KEY AUTO_INCREMENT, suggestor BIGINT, suggestionmsg BIGINT, word VARCHAR(45), approved BIT)")
     cursor.execute("CREATE TABLE IF NOT EXISTS activeCodewords (id INT PRIMARY KEY AUTO_INCREMENT, guild BIGINT, word VARCHAR(45), color varchar(10), revealed BIT)")
 
@@ -62,6 +62,7 @@ BLUE_SPY_EMOJI = '🖌'
 RED_SPY_EMOJI = '📕'
 BLUE_OP_EMOJI = '💙'
 RED_OP_EMOJI = '🔴'
+CODENAMES_EMOJIS = [BLUE_SPY_EMOJI, RED_SPY_EMOJI, BLUE_OP_EMOJI, RED_OP_EMOJI]
 
 @bot.event
 async def on_ready():
@@ -282,31 +283,122 @@ async def begin_game(ctx, game):
     if game=='codenames':
         if query_result[0] != None:
             game_begun = True
-            await begin_codenames(ctx)
+            await begin_codenames(ctx, query_result[0])
     # can add more games with elifs here
 
     if not game_begun:
         await ctx.send(f"There is no {game} game in the process of starting right now. If you're trying to start that process, use `{PREFIX}start {game}`")
 
-async def begin_codenames(ctx):
+async def begin_codenames(ctx, start_msg_id):
     
-    # make sure no user is already in a codenames game on another server
+    guild_id = int(ctx.guild.id)
+
+    # get lists of users who have given each reaction
+    message = await ctx.fetch_message(start_msg_id)
+    players = set()
+    num_role_reactions = 0
+    role_lists = {}
+    for reaction in message.reactions:
+        users = await reaction.users().flatten()
+        filtered_users = list(filter(lambda u: u != bot.user, users))
+        if reaction.emoji in CODENAMES_EMOJIS:
+            role_lists[reaction.emoji] = filtered_users
+            players.update(users)
+            num_role_reactions += len(users)
+
+    # make sure no one's chosen more than one role
+    if len(players) != num_role_reactions:
+        await ctx.send(f"Someone chose more than one role! Please review your reactions, then use `{PREFIX}begin codenames` again once everyone has selected only one role.")
+        return
 
     # make sure there is at least 1 spymaster and 1 operative
+    if len(role_lists[BLUE_SPY_EMOJI]) == 0 and len(role_lists[RED_SPY_EMOJI]) == 0:
+        await ctx.send(f"There needs to be at least one spymaster. Use `{PREFIX}begin codenames` again once someone has selected a spymaster role.")
+        return
+    if len(role_lists[BLUE_OP_EMOJI]) == 0 and len(role_lists[RED_OP_EMOJI]) == 0:
+        await ctx.send(f"There needs to be at least one operative. Use `{PREFIX}begin codenames` again once someone has selected an operative role.")
+        return
 
     # make sure there is no more than one spymaster of either color
+    if len(role_lists[BLUE_SPY_EMOJI]) > 1 or len(role_lists[RED_SPY_EMOJI]) > 1:
+        await ctx.send(f"There can be no more than one spymaster of either color. Use `{PREFIX}begin codenames` again once this condition is satisfied.")
+        return
 
     # if there are two spymasters and multiple operatives, make sure there's at least one operative of both colors
+    if len(role_lists[BLUE_SPY_EMOJI]) + len(role_lists[RED_SPY_EMOJI]) > 1 and len(role_lists[BLUE_OP_EMOJI]) + len(role_lists[RED_OP_EMOJI]) > 1:
+        if len(role_lists[BLUE_OP_EMOJI]) == 0 or len(role_lists[RED_OP_EMOJI]) == 0:
+            await ctx.send(f"A game with two spymasters and multiple operatives must have at least one blue and one red operative. Use `{PREFIX}begin codenames` again once this condition is satisfied.")
+            return
 
+    # make sure no user is already in a codenames game on another server
     cursor = get_cursor()
+    comma_separated_player_ids = comma_separated_ids_from_user_list(players)
+    cursor.execute(f"SELECT user FROM members WHERE user IN ({comma_separated_player_ids}) AND codenamesroleandcolor IS NOT NULL")
+    query_result = cursor.fetchall()
+    if len(query_result) > 0:
+        already_playing_ids = list(map(lambda player_tuple: str(player_tuple[0]), query_result)) # convert from list of 1-tuples to list of strings
+        await ctx.send("<@!" + ">, <@!".join(already_playing_ids) + f">: you are already in a codenames game. Playing multiple codenames games at once, even on different servers, is not currently supported.")
+        await ctx.send(f"Use `{PREFIX}begin codenames` again once everyone attempting to play is free.")
+        cursor.close()
+        return
 
-    # assign users their new roles in the appropriate guild users table (making them all operatives of the spymaster's color in a cooperative game, and making the operative both colors in a competitive 3-player game)
-
-    # remove the game start message id from the guilds table
-    cursor.execute(f"UPDATE guilds SET codenamesstartmsg = NULL WHERE id = {int(ctx.guild.id)}")
+    # make sure all players are in the members table for this guild
+    for user in players:
+        user_id = int(user.id)
+        cursor.execute(f"SELECT * FROM members WHERE user = {user_id} AND guild = {guild_id}")
+        query_result = cursor.fetchone()
+        if query_result == None:
+            cursor.execute(f"INSERT INTO members (user, guild) VALUES ({user_id}, {guild_id})")
     db.commit()
 
+    # assign users their new roles in the members table (making them all operatives of the spymaster's color in a cooperative game, and making the operative both colors in a competitive 3-player game)
+    # spymasters
+    if len(role_lists[BLUE_SPY_EMOJI]) == 1:
+        cursor.execute(f"UPDATE members SET codenamesroleandcolor = 'blue spymaster' WHERE guild = {guild_id} AND user = {int(role_lists[BLUE_SPY_EMOJI][0].id)}")
+    if len(role_lists[RED_SPY_EMOJI]) == 1:
+        cursor.execute(f"UPDATE members SET codenamesroleandcolor = 'red spymaster' WHERE guild = {guild_id} AND user = {int(role_lists[RED_SPY_EMOJI][0].id)}")
+    
+    # operatives
+    all_operatives = role_lists[BLUE_OP_EMOJI] + role_lists[RED_OP_EMOJI]
+    if len(role_lists[BLUE_SPY_EMOJI]) + len(role_lists[RED_SPY_EMOJI]) == 2 and len(all_operatives) == 1: # competitive 3-player game
+        user_id = int(all_operatives[0].id)
+        cursor.execute(f"UPDATE members SET codenamesroleandcolor = 'blue and red operative' WHERE guild = {guild_id} AND user = {user_id}")
+    elif len(role_lists[BLUE_SPY_EMOJI]) == 0: # cooperative; all operatives will be on the red team
+        cursor.execute(f"UPDATE members SET codenamesroleandcolor = 'red operative' WHERE guild = {guild_id} AND user IN ({comma_separated_ids_from_user_list(all_operatives)})")
+    elif len(role_lists[RED_SPY_EMOJI]) == 0: # cooperative; all operatives will be on the blue team
+        cursor.execute(f"UPDATE members SET codenamesroleandcolor = 'blue operative' WHERE guild = {guild_id} AND user IN ({comma_separated_ids_from_user_list(all_operatives)})")
+    else: # normal competitive game with multiple operatives
+        cursor.execute(f"UPDATE members SET codenamesroleandcolor = 'blue operative' WHERE guild = {guild_id} AND user IN ({comma_separated_ids_from_user_list(role_lists[BLUE_OP_EMOJI])})")
+        cursor.execute(f"UPDATE members SET codenamesroleandcolor = 'red operative' WHERE guild = {guild_id} AND user IN ({comma_separated_ids_from_user_list(role_lists[RED_OP_EMOJI])})")
+
+    # remove the game start message id from the guilds table
+    cursor.execute(f"UPDATE guilds SET codenamesstartmsg = NULL WHERE id = {guild_id}")
+
+    # set up words
+    cursor.execute(f"SELECT word FROM codewords ORDER BY RAND() LIMIT 25")
+    query_result = cursor.fetchall()
+    words = list(map(lambda word_tuple: word_tuple[0], query_result)) # convert from list of 1-tuples to list of strings
+    blue_goes_first = random.randint(0,1)
+    red_start_index = 8 + blue_goes_first
+    cursor.execute(active_codewords_insert_sql(guild_id, words[:red_start_index], "blue"))
+    cursor.execute(active_codewords_insert_sql(guild_id, words[red_start_index:17], "red"))
+    cursor.execute(active_codewords_insert_sql(guild_id, words[17:24], "neutral"))
+    cursor.execute(active_codewords_insert_sql(guild_id, words[24:], "assassin"))
+    
+    # commit and close
+    db.commit()
     cursor.close()
+
+def comma_separated_ids_from_user_list(user_list):
+    '''Get a string of comma-separated ids from a list of Discord.py User objects.'''
+    user_ids = list(map(lambda p: int(p.id), user_list))
+    return ", ".join(user_ids)
+
+def active_codewords_insert_sql(guild_id, word_list, color):
+    '''Build a MySQL INSERT string where the VALUES section includes series of (guild, word, color, revealed) groupings separated by commas, to be used when starting codenames.'''
+    values_groupings_list = list(map(lambda word: f"({int(guild_id)}, {word}, {color}, 0)", word_list))
+    values_section = ", ".join(values_groupings_list)
+    return f"INSERT INTO activeCodewords (guild, word, color, revealed) VALUES {values_section}"
 
 @begin_game.error
 async def begin_game_error(ctx, error):
@@ -334,7 +426,7 @@ async def guess(ctx, guess):
     else:
         if query_result[0][0] == None: # the guild is in the database but doesn't have a current word, so complain to the user
             await ctx.send(f"There's no word-guessing game happening right now. Use `{PREFIX}start guess` to start one.")
-            cursor.closee()
+            cursor.close()
             return
     
     # okay, there is indeed a game going on at this point
@@ -659,4 +751,5 @@ def sql_escape_single_quotes(string):
 def sql_unescape_single_quotes(string):
     return string.replace("''", "'")
 
-bot.run(TOKEN)
+if __name__ == "__main__":
+    bot.run(TOKEN)
