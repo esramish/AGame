@@ -395,7 +395,10 @@ async def begin_codenames(ctx, start_msg_id):
     cursor.execute(f"SELECT word FROM codewords ORDER BY RAND() LIMIT 25")
     query_result = cursor.fetchall()
     words = list(map(lambda word_tuple: word_tuple[0], query_result)) # convert from list of 1-tuples to list of strings
-    blue_goes_first = random.randint(0,1)
+    if cooperative:
+        blue_goes_first = len(role_lists[BLUE_SPY_EMOJI])
+    else:
+        blue_goes_first = random.randint(0,1)
     red_start_index = 8 + blue_goes_first
     blue_words = words[:red_start_index]
     red_words = words[red_start_index:17]
@@ -416,39 +419,51 @@ async def begin_codenames(ctx, start_msg_id):
     shuffled_words = list(map(lambda word_tuple: word_tuple[0], shuffled_word_tuples))
     cursor.close()
 
-    # assign red and blue spymaster variables
-    if cooperative:
-        if len(role_lists[BLUE_SPY_EMOJI]):
+    # assign red and blue spymaster variables, and variables regarding who goes first and second
+    if cooperative: # in cooperative games, the non-computer team will always go first
+        if blue_goes_first:
             blue_spymaster = role_lists[BLUE_SPY_EMOJI][0]
+            starting_spymaster = role_lists[BLUE_SPY_EMOJI][0]
             red_spymaster = None
+            second_spymaster = None
+            starting_color = 'blue'
+            second_color = 'red'
+            starting_words = blue_words
+            second_words = red_words
         else:
             red_spymaster = role_lists[RED_SPY_EMOJI][0]
+            starting_spymaster = role_lists[RED_SPY_EMOJI][0]
             blue_spymaster = None
+            second_spymaster = None
+            starting_color = 'red'
+            second_color = 'blue'
+            starting_words = red_words
+            second_words = blue_words
     else:
         blue_spymaster = role_lists[BLUE_SPY_EMOJI][0]
         red_spymaster = role_lists[RED_SPY_EMOJI][0]
     
-    # assign variables regarding who goes first
-    if blue_goes_first:
-        starting_spymaster = blue_spymaster
-        second_spymaster = red_spymaster
-        starting_color = 'blue'
-        second_color = 'red'
-        starting_words = blue_words
-        second_words = red_words
-    else:
-        starting_spymaster = red_spymaster
-        second_spymaster = blue_spymaster
-        starting_color = 'red'
-        second_color = 'blue'
-        starting_words = red_words
-        second_words = blue_words
+        # assign variables regarding who goes first and second
+        if blue_goes_first:
+            starting_spymaster = blue_spymaster
+            second_spymaster = red_spymaster
+            starting_color = 'blue'
+            second_color = 'red'
+            starting_words = blue_words
+            second_words = red_words
+        else:
+            starting_spymaster = red_spymaster
+            second_spymaster = blue_spymaster
+            starting_color = 'red'
+            second_color = 'blue'
+            starting_words = red_words
+            second_words = blue_words
 
     # start first turn
     await cn_start_spymaster_turn(starting_spymaster, ctx, starting_color, blue_words, [], red_words, [], neutral_words, [], assassin_words[0], shuffled_words, blue_goes_first)
     
     # send message to second spymaster
-    if second_spymaster != None: # second_spymaster == None when the computer goes second in a cooperative game
+    if second_spymaster != None: # second_spymaster == None in a cooperative game
         await cn_send_spymaster_update(second_spymaster, second_color, second_words, [], starting_words, [], neutral_words, [], assassin_words[0])
         dm_channel = await get_dm_channel(second_spymaster)
         await dm_channel.send("You'll go second this game—-I'll send you another message when it's your turn")
