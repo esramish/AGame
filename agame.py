@@ -1,3 +1,5 @@
+##### IMPORTS AND SETUP #####
+
 import os
 import pickle
 import random
@@ -39,7 +41,8 @@ with get_cursor() as cursor:
     cursor.execute("CREATE TABLE IF NOT EXISTS guilds (id BIGINT PRIMARY KEY, guildname VARCHAR(255), currword VARCHAR(10), guessquitvotedeadline DATETIME, codenamesstartmsg BIGINT, codenamesquitvotedeadline DATETIME)")
     cursor.execute("CREATE TABLE IF NOT EXISTS members (id INT PRIMARY KEY AUTO_INCREMENT, user BIGINT NOT NULL, guild BIGINT NOT NULL, votetoquitguess BIT, playingguess BIT, votetoquitcodenames BIT, codenamesroleandcolor VARCHAR(25))")
     cursor.execute("CREATE TABLE IF NOT EXISTS codewords (id INT PRIMARY KEY AUTO_INCREMENT, suggestor BIGINT, suggestionmsg BIGINT, word VARCHAR(45), approved BIT)")
-    cursor.execute("CREATE TABLE IF NOT EXISTS activeCodewords (id INT PRIMARY KEY AUTO_INCREMENT, guild BIGINT, word VARCHAR(45), color varchar(10), revealed BIT)")
+    cursor.execute("CREATE TABLE IF NOT EXISTS activeCodewords (id INT PRIMARY KEY AUTO_INCREMENT, guild BIGINT, word VARCHAR(45), color varchar(10), revealed BIT, position FLOAT)")
+    cursor.execute("CREATE TABLE IF NOT EXISTS codenamesGames (id INT PRIMARY KEY AUTO_INCREMENT, guild BIGINT, opsChannel BIGINT, turn VARCHAR(25), numClued INT, numGuessed INT)")
 
 bot = commands.Bot(command_prefix=PREFIX)
 
@@ -67,6 +70,8 @@ CODENAMES_EMOJIS = [BLUE_SPY_EMOJI, RED_SPY_EMOJI, BLUE_OP_EMOJI, RED_OP_EMOJI]
 @bot.event
 async def on_ready():
     print(f'{bot.user.name} has connected to Discord!')
+
+##### REACTIONS #####
 
 @bot.event
 async def on_reaction_add(reaction, user):
@@ -120,6 +125,8 @@ async def codeword_reaction_checker(reaction, user):
 
     cursor.close()
 
+##### BALANCE AND COPPER COMMANDS #####
+
 @bot.command(name='gimmeacopper', help='What could this be???')
 async def onecopper(ctx):
     cursor = get_cursor()
@@ -159,9 +166,13 @@ async def balance_error(ctx, error):
         await ctx.send(f"Use the format `{PREFIX}balance` to check your own balance, or use `{PREFIX}balance <user_mention>` (e.g. `{PREFIX}balance `<@!{bot.user.id}>` `) to check someone else's.")
     else: raise error
 
+##### LISTGAMES #####
+
 @bot.command(name='listgames', help="Lists all the games the bot currently provides")
 async def list_games(ctx):
     await ctx.send(', '.join(GAMES))
+
+##### START #####
 
 @bot.command(name='start', help='Starts a new game')
 async def start_game(ctx, game):
@@ -252,6 +263,8 @@ async def start_game_error(ctx, error):
         await ctx.send(f"Use the format `{PREFIX}start <game>` (e.g. `{PREFIX}start guess`) to start a game.")
     else: raise error
 
+##### BEGIN #####
+
 @bot.command(name='begin', help='Begins a game that has been set up')
 async def begin_game(ctx, game):
     
@@ -303,8 +316,8 @@ async def begin_codenames(ctx, start_msg_id):
         filtered_users = list(filter(lambda u: u != bot.user, users))
         if reaction.emoji in CODENAMES_EMOJIS:
             role_lists[reaction.emoji] = filtered_users
-            players.update(users)
-            num_role_reactions += len(users)
+            players.update(filtered_users)
+            num_role_reactions += len(filtered_users)
 
     # make sure no one's chosen more than one role
     if len(players) != num_role_reactions:
@@ -337,7 +350,7 @@ async def begin_codenames(ctx, start_msg_id):
     query_result = cursor.fetchall()
     if len(query_result) > 0:
         already_playing_ids = list(map(lambda player_tuple: str(player_tuple[0]), query_result)) # convert from list of 1-tuples to list of strings
-        await ctx.send("<@!" + ">, <@!".join(already_playing_ids) + f">: you are already in a codenames game. Playing multiple codenames games at once, even on different servers, is not currently supported.")
+        await ctx.send(f"{mention_string_from_ids(already_playing_ids)}: you are already in a codenames game. Playing multiple codenames games at once, even on different servers, is not currently supported.")
         await ctx.send(f"Use `{PREFIX}begin codenames` again once everyone attempting to play is free.")
         cursor.close()
         return
@@ -361,13 +374,17 @@ async def begin_codenames(ctx, start_msg_id):
     # operatives
     all_operatives = role_lists[BLUE_OP_EMOJI] + role_lists[RED_OP_EMOJI]
     if len(role_lists[BLUE_SPY_EMOJI]) + len(role_lists[RED_SPY_EMOJI]) == 2 and len(all_operatives) == 1: # competitive 3-player game
+        cooperative = False
         user_id = int(all_operatives[0].id)
         cursor.execute(f"UPDATE members SET codenamesroleandcolor = 'blue and red operative' WHERE guild = {guild_id} AND user = {user_id}")
     elif len(role_lists[BLUE_SPY_EMOJI]) == 0: # cooperative; all operatives will be on the red team
+        cooperative = True
         cursor.execute(f"UPDATE members SET codenamesroleandcolor = 'red operative' WHERE guild = {guild_id} AND user IN ({comma_separated_ids_from_user_list(all_operatives)})")
     elif len(role_lists[RED_SPY_EMOJI]) == 0: # cooperative; all operatives will be on the blue team
+        cooperative = True
         cursor.execute(f"UPDATE members SET codenamesroleandcolor = 'blue operative' WHERE guild = {guild_id} AND user IN ({comma_separated_ids_from_user_list(all_operatives)})")
     else: # normal competitive game with multiple operatives
+        cooperative = False
         cursor.execute(f"UPDATE members SET codenamesroleandcolor = 'blue operative' WHERE guild = {guild_id} AND user IN ({comma_separated_ids_from_user_list(role_lists[BLUE_OP_EMOJI])})")
         cursor.execute(f"UPDATE members SET codenamesroleandcolor = 'red operative' WHERE guild = {guild_id} AND user IN ({comma_separated_ids_from_user_list(role_lists[RED_OP_EMOJI])})")
 
@@ -380,31 +397,75 @@ async def begin_codenames(ctx, start_msg_id):
     words = list(map(lambda word_tuple: word_tuple[0], query_result)) # convert from list of 1-tuples to list of strings
     blue_goes_first = random.randint(0,1)
     red_start_index = 8 + blue_goes_first
-    cursor.execute(active_codewords_insert_sql(guild_id, words[:red_start_index], "blue"))
-    cursor.execute(active_codewords_insert_sql(guild_id, words[red_start_index:17], "red"))
-    cursor.execute(active_codewords_insert_sql(guild_id, words[17:24], "neutral"))
-    cursor.execute(active_codewords_insert_sql(guild_id, words[24:], "assassin"))
+    blue_words = words[:red_start_index]
+    red_words = words[red_start_index:17]
+    neutral_words = words[17:24]
+    assassin_words = words[24:]
+    cursor.execute(active_codewords_insert_sql(guild_id, blue_words, "blue"))
+    cursor.execute(active_codewords_insert_sql(guild_id, red_words, "red"))
+    cursor.execute(active_codewords_insert_sql(guild_id, neutral_words, "neutral"))
+    cursor.execute(active_codewords_insert_sql(guild_id, assassin_words, "assassin"))
     
-    # commit and close
+    # insert an entry for the game into the codenamesGames table (but don't worry about initializing the entire row yet)
+    cursor.execute(f"INSERT INTO codenamesGames (guild, opsChannel) VALUES ({guild_id}, {int(ctx.channel.id)})")
+
+    # commit, get the shuffled words, and close the cursor
     db.commit()
+    cursor.execute(f"SELECT word FROM activeCodewords WHERE guild = {guild_id} ORDER BY position")
+    shuffled_word_tuples = cursor.fetchall()
+    shuffled_words = list(map(lambda word_tuple: word_tuple[0], shuffled_word_tuples))
     cursor.close()
 
-def comma_separated_ids_from_user_list(user_list):
-    '''Get a string of comma-separated ids from a list of Discord.py User objects.'''
-    user_ids = list(map(lambda p: int(p.id), user_list))
-    return ", ".join(user_ids)
+    # assign red and blue spymaster variables
+    if cooperative:
+        if len(role_lists[BLUE_SPY_EMOJI]):
+            blue_spymaster = role_lists[BLUE_SPY_EMOJI][0]
+            red_spymaster = None
+        else:
+            red_spymaster = role_lists[RED_SPY_EMOJI][0]
+            blue_spymaster = None
+    else:
+        blue_spymaster = role_lists[BLUE_SPY_EMOJI][0]
+        red_spymaster = role_lists[RED_SPY_EMOJI][0]
+    
+    # assign variables regarding who goes first
+    if blue_goes_first:
+        starting_spymaster = blue_spymaster
+        second_spymaster = red_spymaster
+        starting_color = 'blue'
+        second_color = 'red'
+        starting_words = blue_words
+        second_words = red_words
+    else:
+        starting_spymaster = red_spymaster
+        second_spymaster = blue_spymaster
+        starting_color = 'red'
+        second_color = 'blue'
+        starting_words = red_words
+        second_words = blue_words
+
+    # start first turn
+    await cn_start_spymaster_turn(starting_spymaster, ctx, starting_color, blue_words, [], red_words, [], neutral_words, [], assassin_words[0], shuffled_words, blue_goes_first)
+    
+    # send message to second spymaster
+    if second_spymaster != None: # second_spymaster == None when the computer goes second in a cooperative game
+        await cn_send_spymaster_update(second_spymaster, second_color, second_words, [], starting_words, [], neutral_words, [], assassin_words[0])
+        dm_channel = await get_dm_channel(second_spymaster)
+        await dm_channel.send("You'll go second this game—-I'll send you another message when it's your turn")
 
 def active_codewords_insert_sql(guild_id, word_list, color):
     '''Build a MySQL INSERT string where the VALUES section includes series of (guild, word, color, revealed) groupings separated by commas, to be used when starting codenames.'''
-    values_groupings_list = list(map(lambda word: f"({int(guild_id)}, {word}, {color}, 0)", word_list))
+    values_groupings_list = list(map(lambda word: f"({int(guild_id)}, '{word}', '{color}', 0, RAND())", word_list))
     values_section = ", ".join(values_groupings_list)
-    return f"INSERT INTO activeCodewords (guild, word, color, revealed) VALUES {values_section}"
+    return f"INSERT INTO activeCodewords (guild, word, color, revealed, position) VALUES {values_section}"
 
 @begin_game.error
 async def begin_game_error(ctx, error):
     if isinstance(error, commands.errors.MissingRequiredArgument):
         await ctx.send(f"Use the format `{PREFIX}begin <game>` (e.g. `{PREFIX}begin codenames`) to begin a game that's ready.")
     else: raise error
+
+##### GUESS #####
 
 @bot.command(name='guess', help='Guesses a word in the 5-letter-word guessing game')
 async def guess(ctx, guess):
@@ -461,7 +522,7 @@ async def guess(ctx, guess):
         other_players_query = cursor.fetchall()
         if len(other_players_query) > 0:
             other_players = list(map(lambda player_tuple: str(player_tuple[0]), other_players_query)) # convert from list of 1-tuples to list of strings
-            mentions_string = "<@!" + ">, <@!".join(other_players) + f">: you win {PLAY_GUESS_REWARD} copper! "
+            mentions_string = mention_string_from_id_strings(other_players) + f": you win {PLAY_GUESS_REWARD} copper! "
         else:
             mentions_string = ""
 
@@ -513,6 +574,142 @@ async def guess_error(ctx, error):
     if isinstance(error, commands.errors.MissingRequiredArgument):
         await ctx.send(f"Use the format `{PREFIX}guess <word>` to guess a word.")
     else: raise error
+
+##### CODENAMES #####
+
+async def cn_send_spymaster_update(user: discord.User, color, their_words_unrevealed, their_words_revealed, other_words_unrevealed, other_words_revealed, neutral_words_unrevealed, neutral_words_revealed, assassin_word):
+    
+    # Format each sub-list of words
+    display_color = color[0].upper() + color[1:]
+    their_words_formatted = '\n'.join(their_words_unrevealed) + (('\n~~' + '\n'.join(their_words_revealed) + '~~\n') if len(their_words_revealed) else '\n')
+    other_words_formatted = '\n'.join(other_words_unrevealed) + (('\n~~' + '\n'.join(other_words_revealed) + '~~\n') if len(other_words_revealed) else '\n')
+    neutral_words_formatted = '\n'.join(neutral_words_unrevealed) + (('\n~~' + '\n'.join(neutral_words_revealed) + '~~\n') if len(neutral_words_revealed) else '\n')
+    
+    # Build the embed description
+    embed_descr = f"**Your Words**\n" + their_words_formatted
+    embed_descr += f"\n**Opponent's Words**\n" + other_words_formatted
+    embed_descr += "\n**Neutral Words**\n" + neutral_words_formatted
+    embed_descr += "\n**Assassin Word**\n" + assassin_word
+    
+    # Build and send embed
+    embed = discord.Embed(title=f"Codenames: {display_color} Spymaster", description=embed_descr, color=0x0000ff if color=='blue' else 0xff0000)
+    dm_channel = await get_dm_channel(user)
+    await dm_channel.send(embed=embed)
+
+async def cn_send_public_update(ctx, blue_words_revealed, red_words_revealed, neutral_words_revealed, unrevealed_words, blue_went_first):
+    embed = discord.Embed(title=f"Codenames Board", color=16711935) # magenta
+    
+    unrevealed_words_formatted = '\n'.join(unrevealed_words)
+    embed.add_field(name=f"Unrevealed Words", value=unrevealed_words_formatted, inline=False)
+    if len(blue_words_revealed):
+        blue_words_formatted = '\n'.join(blue_words_revealed)
+        embed.add_field(name=f"Blue Words", value=blue_words_formatted, inline=False)
+    if len(red_words_revealed):
+        red_words_formatted = '\n'.join(red_words_revealed)
+        embed.add_field(name=f"Red Words", value=red_words_formatted, inline=False)
+    if len(red_words_revealed):
+        neutral_words_formatted = '\n'.join(neutral_words_revealed)
+        embed.add_field(name=f"Neutral Words", value=neutral_words_formatted, inline=False)
+    
+    await ctx.send(embed=embed)
+
+async def cn_start_spymaster_turn(spymaster: discord.User, guild_ctx, color, blue_words_unrevealed, blue_words_revealed, red_words_unrevealed, red_words_revealed, neutral_words_unrevealed, neutral_words_revealed, assassin_word, shuffled_unrevealed_words, blue_went_first):
+    
+    # message spymaster
+    if spymaster != None: # spymaster == None on the computer side in a cooperative game
+        if color=='blue':
+            their_words_unrevealed = blue_words_unrevealed
+            their_words_revealed = blue_words_revealed
+            other_words_unrevealed = red_words_unrevealed
+            other_words_revealed = red_words_revealed
+        else:
+            their_words_unrevealed = red_words_unrevealed
+            their_words_revealed = red_words_revealed
+            other_words_unrevealed = blue_words_unrevealed
+            other_words_revealed = blue_words_revealed
+        await cn_send_spymaster_update(spymaster, color, their_words_unrevealed, their_words_revealed, other_words_unrevealed, other_words_revealed, neutral_words_unrevealed, neutral_words_revealed, assassin_word)
+        dm_channel = await get_dm_channel(spymaster)
+        await dm_channel.send(f"Your turn! Use `{PREFIX}cnclue <word> <number>` (e.g. `{PREFIX}cnclue bush 2`) to give your clue.")
+    
+    # message public channel
+    await cn_send_public_update(guild_ctx, blue_words_revealed, red_words_revealed, neutral_words_revealed, shuffled_unrevealed_words, blue_went_first)
+    await guild_ctx.send(f"Awaiting a clue from the {color} spymaster...")
+
+    # update database
+    cursor = get_cursor()
+    cursor.execute(f"UPDATE codenamesGames SET turn = '{color} spymaster', numClued = NULL, numGuessed = NULL WHERE guild = {int(guild_ctx.guild.id)}")
+    db.commit()
+    cursor.close()
+
+async def cn_start_operatives_turn(ctx, these_operative_id_strings, color, blue_words_revealed, red_words_revealed, neutral_words_revealed, unrevealed_words, blue_went_first):
+    
+    # message public channel
+    await cn_send_public_update(ctx, blue_words_revealed, red_words_revealed, neutral_words_revealed, unrevealed_words, blue_went_first)
+    await ctx.send(f"{mention_string_from_id_strings(these_operative_id_strings)} ({color} operatives): your turn! Use `{PREFIX}cnguess <word>` (e.g. `{PREFIX}cnguess {unrevealed_words[0]}`) to guess a word that you think is the {color} team's.")
+
+    # update database
+    cursor = get_cursor()
+    cursor.execute(f"UPDATE codenamesGames SET turn = '{color} operative', numGuessed = 0 WHERE guild = {int(guild_ctx.guild.id)}")
+    db.commit()
+    cursor.close()
+
+##### CODEWORD #####
+
+@bot.command(help='Suggests a word to be added to the list of codenames words')
+async def codeword(ctx, word):
+    # make sure command is being given in a guild context
+    if ctx.guild == None:
+        await ctx.send(f"Using this command in a private chat is not allowed.")
+        return
+    
+    cursor = get_cursor()
+    
+    # make sure the user is in the users table, so they can be rewarded if their suggestion is approved
+    author = sql_escape_single_quotes(ctx.author.name)
+    cursor.execute(f"SELECT balance FROM users where id={int(ctx.author.id)}")
+    query_result = cursor.fetchall()
+    if len(query_result) == 0: # user's not in the users table yet, so add them in with balance of 0
+        cursor.execute(f"INSERT INTO users (id, username, balance) VALUES ({int(ctx.author.id)}, '{author}', 0)")
+    db.commit()
+
+    # format word, and escape word for SQL
+    word = word.lower()
+    unescaped_word = word
+    word = sql_escape_single_quotes(word)
+    
+    # check if word was recently suggested or already approved
+    cursor.execute(f"SELECT suggestion_time, approved FROM codewords WHERE word='{word}'")
+    query_result = cursor.fetchone()
+    if query_result != None:
+        suggestion_time, approved = query_result
+        if approved:
+            await ctx.send(f"Someone already added the word **{unescaped_word}**")
+            cursor.close()
+            return
+        elif datetime.utcnow() - suggestion_time < timedelta(days=1):
+            await ctx.send(f"Someone already suggested the word **{unescaped_word}**. If it still isn't approved in 24 hours, try suggesting it again")
+            cursor.close()
+            return
+        else: # there is an entry for this word in the database, but it's old an unapproved, so let's delete it and let the user add a new one
+            cursor.execute(f"DELETE FROM codewords WHERE word='{word}'")
+            db.commit()
+
+    # send voting message
+    message = await ctx.send(f"React {CODEWORD_VOTE_EMOJI} to this message to approve the codenames word **{word}**! {NUM_CODEWORD_REQ_VOTES} more vote{'s' if NUM_CODEWORD_REQ_VOTES != 1 else ''} needed")
+    await message.add_reaction(CODEWORD_VOTE_EMOJI)
+
+    # insert word candidate into database
+    cursor.execute(f"INSERT INTO codewords (suggestor, suggestionmsg, word, approved, suggestion_time) VALUES ({int(ctx.author.id)}, {int(message.id)}, '{word}', 0, '{datetime.strftime(datetime.utcnow(), '%Y-%m-%d %H:%M:%S')}')")
+    db.commit()
+    cursor.close()
+
+@codeword.error
+async def codeword_error(ctx, error):
+    if isinstance(error, commands.errors.MissingRequiredArgument):
+        await ctx.send(f"Use the format `{PREFIX}codeword <word>` (e.g. `{PREFIX}codeword computer`) to suggest a codenames word.")
+    else: raise error
+
+##### QUIT #####
 
 @bot.command(name='quit', help='Initiates a vote to quit a current game')
 async def quit_game(ctx, game, vote='yes'):
@@ -606,35 +803,40 @@ async def quit_game(ctx, game, vote='yes'):
     db.commit()
     cursor.close()
     
-    await ctx.send(f"{ctx.author.name} votes to **{'quit' if wants_to_quit else 'continue'}** the {game} game")
+    await ctx.send(f"{ctx.author.name} votes to **{'end' if wants_to_quit else 'continue'}** the {game} game")
 
 async def quit_timer(ctx, game):
     await asyncio.sleep(60)
     
     cursor = get_cursor()
+    guild_id = int(ctx.guild.id)
 
     # clear deadline in database
-    cursor.execute(f"UPDATE guilds SET {game}quitvotedeadline = NULL WHERE id={ctx.guild.id}")
+    cursor.execute(f"UPDATE guilds SET {game}quitvotedeadline = NULL WHERE id={guild_id}")
     db.commit()
     
     # address the results
-    cursor.execute(f"SELECT votetoquit{game} FROM members WHERE guild = {ctx.guild.id}")
+    cursor.execute(f"SELECT votetoquit{game} FROM members WHERE guild = {guild_id}")
     results = cursor.fetchall()
     yeas = list(filter(lambda query_row: query_row[0] == 1, results))
     neas = list(filter(lambda query_row: query_row[0] == 0, results))
     if len(yeas) > len(neas):   
-        await ctx.send(f"Time's up! The people have spoken: they've voted {len(yeas)}-{len(neas)} to **quit** the {game} game. Use `{PREFIX}start {game}` to start a new one")
+        await ctx.send(f"Time's up! The people have spoken: they've voted {len(yeas)}-{len(neas)} to **end** the {game} game. Use `{PREFIX}start {game}` to start a new one")
         if game=='guess':
             # reset the list of who is playing the guess game
-            cursor.execute(f"UPDATE members SET playingguess = NULL WHERE guild = {ctx.guild.id}")
+            cursor.execute(f"UPDATE members SET playingguess = NULL WHERE guild = {guild_id}")
             
             # send the secret word in a message, then clear the word
-            cursor.execute(f"SELECT currword FROM guilds WHERE id={ctx.guild.id}")
+            cursor.execute(f"SELECT currword FROM guilds WHERE id={guild_id}")
             await ctx.send(f"My word was **{cursor.fetchone()[0]}**")
-            cursor.execute(f"UPDATE guilds SET currword = NULL where id={ctx.guild.id}")
+            cursor.execute(f"UPDATE guilds SET currword = NULL where id={guild_id}")
             db.commit()
         elif game=='codenames':
-            pass # TODO
+            # TODO: display the board for everyone to see?
+            cursor.execute(f"UPDATE members SET codenamesroleandcolor = NULL WHERE guild = {guild_id}")
+            cursor.execute(f"DELETE FROM activeCodewords WHERE guild={guild_id}")
+            cursor.execute(f"DELETE FROM codenamesGames WHERE guild={guild_id}")
+            db.commit()
         # can add more games here with elifs
     else: 
         await ctx.send(f"Time's up! The people have spoken: they've voted {len(neas)}-{len(yeas)} to **continue** the {game} game.")
@@ -646,6 +848,8 @@ async def quit_game_error(ctx, error):
     if isinstance(error, commands.errors.MissingRequiredArgument):
         await ctx.send(f"Use the format `{PREFIX}quit <game>` (e.g. `{PREFIX}quit guess`) to quit a game.")
     else: raise error
+
+##### CANCEL #####
 
 @bot.command(name='cancel', help='Cancels the start process for a game')
 async def cancel_game(ctx, game):
@@ -691,65 +895,26 @@ async def cancel_game_error(ctx, error):
         await ctx.send(f"Use the format `{PREFIX}cancel <game>` (e.g. `{PREFIX}cancel codenames`) to cancel a game start.")
     else: raise error
 
-@bot.command(help='Suggests a word to be added to the list of codenames words')
-async def codeword(ctx, word):
-    # make sure command is being given in a guild context
-    if ctx.guild == None:
-        await ctx.send(f"Using this command in a private chat is not allowed.")
-        return
-    
-    cursor = get_cursor()
-    
-    # make sure the user is in the users table, so they can be rewarded if their suggestion is approved
-    author = sql_escape_single_quotes(ctx.author.name)
-    cursor.execute(f"SELECT balance FROM users where id={int(ctx.author.id)}")
-    query_result = cursor.fetchall()
-    if len(query_result) == 0: # user's not in the users table yet, so add them in with balance of 0
-        cursor.execute(f"INSERT INTO users (id, username, balance) VALUES ({int(ctx.author.id)}, '{author}', 0)")
-    db.commit()
-
-    # format word, and escape word for SQL
-    word = word.lower()
-    unescaped_word = word
-    word = sql_escape_single_quotes(word)
-    
-    # check if word was recently suggested or already approved
-    cursor.execute(f"SELECT suggestion_time, approved FROM codewords WHERE word='{word}'")
-    query_result = cursor.fetchone()
-    if query_result != None:
-        suggestion_time, approved = query_result
-        if approved:
-            await ctx.send(f"Someone already added the word **{unescaped_word}**")
-            cursor.close()
-            return
-        elif datetime.utcnow() - suggestion_time < timedelta(days=1):
-            await ctx.send(f"Someone already suggested the word **{unescaped_word}**. If it still isn't approved in 24 hours, try suggesting it again")
-            cursor.close()
-            return
-        else: # there is an entry for this word in the database, but it's old an unapproved, so let's delete it and let the user add a new one
-            cursor.execute(f"DELETE FROM codewords WHERE word='{word}'")
-            db.commit()
-
-    # send voting message
-    message = await ctx.send(f"React {CODEWORD_VOTE_EMOJI} to this message to approve the codenames word **{word}**! {NUM_CODEWORD_REQ_VOTES} more vote{'s' if NUM_CODEWORD_REQ_VOTES != 1 else ''} needed")
-    await message.add_reaction(CODEWORD_VOTE_EMOJI)
-
-    # insert word candidate into database
-    cursor.execute(f"INSERT INTO codewords (suggestor, suggestionmsg, word, approved, suggestion_time) VALUES ({int(ctx.author.id)}, {int(message.id)}, '{word}', 0, '{datetime.strftime(datetime.utcnow(), '%Y-%m-%d %H:%M:%S')}')")
-    db.commit()
-    cursor.close()
-
-@codeword.error
-async def codeword_error(ctx, error):
-    if isinstance(error, commands.errors.MissingRequiredArgument):
-        await ctx.send(f"Use the format `{PREFIX}codeword <word>` (e.g. `{PREFIX}codeword computer`) to suggest a codenames word.")
-    else: raise error
+##### GENERAL HELPER FUNCTIONS #####
 
 def sql_escape_single_quotes(string):
     return string.replace("'", "''")
 
 def sql_unescape_single_quotes(string):
     return string.replace("''", "'")
+
+def mention_string_from_id_strings(user_ids):
+    return "<@!" + ">, <@!".join(user_ids) + ">"
+
+def comma_separated_ids_from_user_list(user_list):
+    '''Get a string of comma-separated ids from a list of Discord.py User objects.'''
+    user_ids = list(map(lambda p: str(int(p.id)), user_list)) # str(int(p.id)) to use int for safety but because it needs to be a string for the next line
+    return ", ".join(user_ids)
+
+async def get_dm_channel(user):
+    return user.dm_channel if user.dm_channel != None else await user.create_dm()
+
+##########
 
 if __name__ == "__main__":
     bot.run(TOKEN)
