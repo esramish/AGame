@@ -667,7 +667,7 @@ async def cnclue(ctx, word, num):
     
     # make sure user is a spymaster (which also checks that a game is going) and it's their turn
     validation_results = await cn_validate_spymaster(ctx)
-    if validation == None: return
+    if validation_results == None: return
     
     # finish making sure the clue is valid
     word = sql_escape_single_quotes(word)
@@ -684,7 +684,7 @@ async def cnclue(ctx, word, num):
         return
     
     # let user know their clue was valid
-    await ctx.send("Your clue is valid!")
+    await ctx.send("Your clue has been submitted!")
 
     # message public channel
     guild_id, operatives_channel, turn = validation_results
@@ -702,7 +702,7 @@ async def cnclue(ctx, word, num):
         num = -1
     cursor.execute(f"SELECT word FROM activeCodewords WHERE guild = {guild_id} AND NOT revealed ORDER BY position LIMIT 1")
     unrevealed_word_example = cursor.fetchone()[0]
-    await operatives_channel.send(f"{mention_string_from_id_strings(these_operative_id_strings)} ({color} operatives): your turn! Your clue is **{word} {num_str}**. Use `{PREFIX}cnguess <word>` (e.g. `{PREFIX}cnguess {unrevealed_word_example}`) to guess a word that you think is the {color} team's.")
+    await bot.get_channel(operatives_channel).send(f"{mention_string_from_id_strings(these_operative_id_strings)} ({color} operatives): your turn! Your clue is **{word} {num_str}**. Use `{PREFIX}cnguess <word>` (e.g. `{PREFIX}cnguess {unrevealed_word_example}`) to guess a word that you think is the {color} team's.")
 
     # update database
     cursor.execute(f"UPDATE codenamesGames SET turn = '{color} operative', numClued = {num}, numGuessed = 0 WHERE guild = {guild_id}")
