@@ -355,13 +355,19 @@ async def begin_codenames(ctx, start_msg_id):
         cursor.close()
         return
 
-    # make sure all players are in the members table for this guild
+    # make sure all players are in the members table for this guild, and the users table
     for user in players:
         user_id = int(user.id)
         cursor.execute(f"SELECT * FROM members WHERE user = {user_id} AND guild = {guild_id}")
         query_result = cursor.fetchone()
         if query_result == None:
             cursor.execute(f"INSERT INTO members (user, guild) VALUES ({user_id}, {guild_id})")
+
+        username = sql_escape_single_quotes(user.name)
+        cursor.execute(f"SELECT * FROM users where id={user_id}")
+        query_result = cursor.fetchone()
+        if query_result == None: # user's not in the users table yet, so add them in with balance of 0
+            cursor.execute(f"INSERT INTO users (id, username, balance) VALUES ({user_id}, '{username}', 0)")
     db.commit()
 
     # assign users their new roles in the members table (making them all operatives of the spymaster's color in a cooperative game, and making the operative both colors in a competitive 3-player game)
