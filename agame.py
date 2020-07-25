@@ -22,7 +22,8 @@ def get_new_db_connection():
         host=os.getenv('AGAME_DB_IP'),
         user=os.getenv('AGAME_DB_USERNAME'),
         password=os.getenv('AGAME_DB_PASSWORD'),
-        database=os.getenv('AGAME_DB_DBNAME')
+        database=os.getenv('AGAME_DB_DBNAME'),
+        autocommit=True
     )
 
 # connect to database
