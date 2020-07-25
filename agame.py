@@ -662,17 +662,141 @@ async def cn_start_spymaster_turn(spymaster: discord.User, guild_ctx, color, blu
     db.commit()
     cursor.close()
 
-async def cn_start_operatives_turn(ctx, these_operative_id_strings, color, blue_words_revealed, red_words_revealed, neutral_words_revealed, unrevealed_words, blue_went_first):
+@bot.command(help='Gives a clue, as a codenames spymaster')
+async def cnclue(ctx, word, num):
     
+    # make sure user is a spymaster (which also checks that a game is going) and it's their turn
+    validation_results = await cn_validate_spymaster(ctx)
+    if validation == None: return
+    
+    # finish making sure the clue is valid
+    word = sql_escape_single_quotes(word)
+    try: 
+        num = int(num)
+    except ValueError: 
+        if num.lower() in ['infinity', 'inf']:
+            num = 25
+        else:
+            await ctx.send(f"**{num}** is not a valid number of words. Please try again")
+            return
+    if num < 0:
+        await ctx.send(f"**{num}** is not a valid number of words. Please try again")
+        return
+    
+    # let user know their clue was valid
+    await ctx.send("Your clue is valid!")
+
     # message public channel
-    await cn_send_public_update(ctx, blue_words_revealed, red_words_revealed, neutral_words_revealed, unrevealed_words, blue_went_first)
-    await ctx.send(f"{mention_string_from_id_strings(these_operative_id_strings)} ({color} operatives): your turn! Use `{PREFIX}cnguess <word>` (e.g. `{PREFIX}cnguess {unrevealed_words[0]}`) to guess a word that you think is the {color} team's.")
+    guild_id, operatives_channel, turn = validation_results
+    color = turn.split()[0]
+    cursor = get_cursor()
+    cursor.execute(f"SELECT user FROM members WHERE guild = {guild_id} AND codenamesroleandcolor LIKE '%{color}%operative'")
+    query_result = cursor.fetchall()
+    these_operative_id_strings = list(map(lambda id_tuple: str(id_tuple[0]), query_result))
+    cursor.execute(f"SELECT COUNT(word) FROM activeCodewords WHERE guild = {guild_id} AND color = '{color}' AND NOT revealed")
+    count_their_unrevealed = cursor.fetchone()[0]
+    if num <= count_their_unrevealed:
+        num_str = str(num)
+    else:
+        num_str = "infinity"
+        num = -1
+    cursor.execute(f"SELECT word FROM activeCodewords WHERE guild = {guild_id} AND NOT revealed ORDER BY position LIMIT 1")
+    unrevealed_word_example = cursor.fetchone()[0]
+    await operatives_channel.send(f"{mention_string_from_id_strings(these_operative_id_strings)} ({color} operatives): your turn! Your clue is **{word} {num_str}**. Use `{PREFIX}cnguess <word>` (e.g. `{PREFIX}cnguess {unrevealed_word_example}`) to guess a word that you think is the {color} team's.")
 
     # update database
-    cursor = get_cursor()
-    cursor.execute(f"UPDATE codenamesGames SET turn = '{color} operative', numGuessed = 0 WHERE guild = {int(guild_ctx.guild.id)}")
+    cursor.execute(f"UPDATE codenamesGames SET turn = '{color} operative', numClued = {num}, numGuessed = 0 WHERE guild = {guild_id}")
     db.commit()
     cursor.close()
+
+@cnclue.error
+async def cnclue_error(ctx, error):
+    
+    # see if user is not a spymaster, or if it's not their turn even if they are a spymaster
+    validation_results = await cn_validate_spymaster(ctx)
+    if validation_results == None: return
+    
+    # okay, just respond to the malformatted command
+    if isinstance(error, commands.errors.MissingRequiredArgument):
+        await ctx.send(f"Use the format `{PREFIX}cnclue <word> <number>` (e.g. `{PREFIX}cnclue bush 2`) to give your clue.")
+    else: raise error
+
+async def cn_validate_spymaster(ctx):
+    
+    # are they a spymasteer
+    author_id = int(ctx.author.id)
+    cursor = get_cursor()
+    cursor.execute(f"SELECT guild, codenamesroleandcolor FROM members WHERE user = {author_id} AND codenamesroleandcolor LIKE '%spymaster'")
+    query_result = cursor.fetchone()
+    if query_result == None: 
+        await ctx.send("Only someone who is currently playing as a spymaster in a codenames game may use this command.")
+        cursor.close()
+        return
+    
+    # is it their turn
+    guild_id, role_and_color = query_result
+    cursor.execute(f"SELECT opsChannel, turn FROM codenamesGames WHERE guild = {guild_id}")
+    operatives_channel, turn = cursor.fetchone()
+    if turn != role_and_color:
+        await ctx.send(f"It is not your turn.")
+        cursor.close()
+        return
+    
+    # valid, so return necessary info
+    cursor.close()
+    return guild_id, operatives_channel, turn
+
+@bot.command(help='Guesses a word, as a codenames operative')
+async def cnguess(ctx, guess):
+    
+    # make sure it's not in a private channel
+
+    # make sure user is an operative (which also checks that a game is going) and it's their turn
+
+    pass
+
+@cnguess.error
+async def cnguess_error(ctx, error):
+    
+    # see if user is not an operative, or if it's not their turn even if they are an operative
+    validation_results = await cn_validate_operative(ctx)
+    if validation_results == None: return
+    
+    # okay, just respond to the malformatted comman
+    guild_id = validation_results[0]
+    cursor = get_cursor()
+    cursor.execute(f"SELECT word FROM activeCodewords WHERE guild = {guild_id} AND NOT revealed ORDER BY position LIMIT 1")
+    unrevealed_word_example = cursor.fetchone()[0]
+    cursor.close()
+    if isinstance(error, commands.errors.MissingRequiredArgument):
+        await ctx.send(f"Use `{PREFIX}cnguess <word>` (e.g. `{PREFIX}cnguess {unrevealed_word_example}`) to guess a word.")
+    else: raise error
+
+async def cn_validate_operative(ctx):
+    
+    # are they an operative 
+    author_id = int(ctx.author.id)
+    cursor = get_cursor()
+    cursor.execute(f"SELECT guild, codenamesroleandcolor FROM members WHERE user = {author_id} AND codenamesroleandcolor LIKE '%operative'")
+    query_result = cursor.fetchone()
+    if query_result == None: 
+        await ctx.send("Only someone who is currently playing as an operative in a codenames game may use this command.")
+        cursor.close()
+        return
+    
+    # is it their turn
+    guild_id, role_and_color = query_result
+    cursor.execute(f"SELECT opsChannel, turn FROM codenamesGames WHERE guild = {guild_id}")
+    operatives_channel, turn = cursor.fetchone()
+    color = turn.split()[0]
+    if 'operative' not in turn or color not in role_and_color:
+        await ctx.send(f"It is not your turn.")
+        cursor.close()
+        return
+    
+    # valid, so return necessary info
+    cursor.close()
+    return guild_id, operatives_channel, color
 
 ##### CODEWORD #####
 
