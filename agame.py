@@ -67,6 +67,9 @@ RED_SPY_EMOJI = '📕'
 BLUE_OP_EMOJI = '💙'
 RED_OP_EMOJI = '🔴'
 CODENAMES_EMOJIS = [BLUE_SPY_EMOJI, RED_SPY_EMOJI, BLUE_OP_EMOJI, RED_OP_EMOJI]
+WIN_CODENAMES_REWARD = 100
+PLAY_CODENAMES_REWARD = 40
+DOUBLE_AGENT_REWARD = (WIN_CODENAMES_REWARD + PLAY_CODENAMES_REWARD) // 2
 
 @bot.event
 async def on_ready():
@@ -180,7 +183,7 @@ async def start_game(ctx, game):
     
     # make sure command is being given in a guild context
     if ctx.guild == None:
-        await ctx.send(f"Using this command in a private chat is not allowed.")
+        await ctx.send("Using this command in a private chat is not allowed.")
         return
     
     # check if valid command
@@ -271,7 +274,7 @@ async def begin_game(ctx, game):
     
     # make sure command is being given in a guild context
     if ctx.guild == None:
-        await ctx.send(f"Using this command in a private chat is not allowed.")
+        await ctx.send("Using this command in a private chat is not allowed.")
         return
 
     # check if valid command
@@ -494,7 +497,7 @@ async def guess(ctx, guess):
     
     # make sure command is being given in a guild context
     if ctx.guild == None:
-        await ctx.send(f"Using this command in a private chat is not allowed.")
+        await ctx.send("Using this command in a private chat is not allowed.")
         return
     
     cursor = get_cursor()
@@ -748,7 +751,7 @@ async def cnguess(ctx, guess):
 
     # make sure it's not in a private channel
     if ctx.guild == None:
-        await ctx.send(f"Using this command in a private chat is not allowed.")
+        await ctx.send("Using this command in a private chat is not allowed.")
         return
 
     # make sure user is an operative (which also checks that a game is going) and it's their turn
@@ -756,7 +759,7 @@ async def cnguess(ctx, guess):
     if validation_results == None: return
     
     # make sure the word is a guessable word
-    guild_id, operatives_channel, turn_color = validation_results
+    guild_id, turn_color, _ = validation_results
     cursor = get_cursor()
     cursor.execute(f"SELECT color FROM activeCodewords WHERE guild = {guild_id} AND word = '{guess}' AND NOT revealed")
     query_result = cursor.fetchone()
@@ -775,7 +778,7 @@ async def cnguess(ctx, guess):
         await ctx.send(f"Nice! **{guess}** is a **{turn_color}** word.")
         
         # see if they won
-        cursor.execute(f"SELECT COUNT(*) FROM activeCodewords WHERE guild = {guild_id} AND color = {turn_color} AND NOT revealed")
+        cursor.execute(f"SELECT COUNT(*) FROM activeCodewords WHERE guild = {guild_id} AND color = '{turn_color}' AND NOT revealed")
         count_their_unrevealed = cursor.fetchone()[0]
         if count_their_unrevealed == 0: # they won
             await cn_end_game(ctx, turn_color)
@@ -795,7 +798,7 @@ async def cnguess(ctx, guess):
         await ctx.send(f"Whoops: **{guess}** is a **{guess_color}** word.")
         
         # see if they lost
-        cursor.execute(f"SELECT COUNT(*) FROM activeCodewords WHERE guild = {guild_id} AND color = {cn_opposite_color(turn_color)} AND NOT revealed")
+        cursor.execute(f"SELECT COUNT(*) FROM activeCodewords WHERE guild = {guild_id} AND color = '{cn_opposite_color(turn_color)}' AND NOT revealed")
         count_other_unrevealed = cursor.fetchone()[0]
         if count_other_unrevealed == 0: # they lost
             await cn_end_game(ctx, cn_opposite_color(turn_color))
@@ -826,12 +829,18 @@ async def cnpass(ctx):
     
     # make sure it's not in a private channel
     if ctx.guild == None:
-        await ctx.send(f"Using this command in a private chat is not allowed.")
+        await ctx.send("Using this command in a private chat is not allowed.")
         return
 
     # make sure user is an operative (which also checks that a game is going) and it's their turn
     validation_results = await cn_validate_operative(ctx)
     if validation_results == None: return
+
+    # make sure the team has guessed at least 
+    numGuessed = validation_results[2]
+    if numGuessed == 0:
+        await ctx.send("Your team must guess at least one word before you can pass your turn.")
+        return
 
     # end their turn
     await cn_end_turn(ctx)
@@ -875,8 +884,8 @@ async def cn_validate_operative(ctx):
     
     # is it their turn
     guild_id, role_and_color = query_result
-    cursor.execute(f"SELECT opsChannel, turn FROM codenamesGames WHERE guild = {guild_id}")
-    operatives_channel, turn = cursor.fetchone()
+    cursor.execute(f"SELECT turn, numGuessed FROM codenamesGames WHERE guild = {guild_id}")
+    turn, numGuessed = cursor.fetchone()
     color = turn.split()[0]
     if 'operative' not in turn or color not in role_and_color:
         await ctx.send(f"It is not your turn.")
@@ -885,7 +894,7 @@ async def cn_validate_operative(ctx):
     
     # valid, so return necessary info
     cursor.close()
-    return guild_id, operatives_channel, color
+    return guild_id, color, numGuessed
 
 def cn_opposite_color(color):
     if color=='blue': return 'red'
@@ -927,14 +936,14 @@ async def cn_end_turn(ctx):
     if num_spymasters == 1: # cooperative game
 
         # reveal a random word for the computer team
-        cursor.execute(f"SELECT id, word FROM activeCodewords WHERE guild = {guild_id} AND color = {next_turn_color} AND NOT revealed ORDER BY RAND()")
+        cursor.execute(f"SELECT id, word FROM activeCodewords WHERE guild = {guild_id} AND color = '{next_turn_color}' AND NOT revealed ORDER BY RAND()")
         cpu_unrevealed_words = cursor.fetchall()
         rev_word_id, rev_word = cpu_unrevealed_words[0]
         cursor.execute(f"UPDATE activeCodewords SET revealed = 1 WHERE id = {rev_word_id}")
         db.commit()
         await ctx.send(f"The computer correctly guesses that **{rev_word}** is **{next_turn_color}**.")
         
-        if len(cpu_unrevealed_word) == 1: # the players lost
+        if len(cpu_unrevealed_words) == 1: # the players lost
             await cn_end_game(ctx, next_turn_color)
     
     else: # competitive game
@@ -955,13 +964,65 @@ async def cn_end_turn(ctx):
 
     cursor.close()
 
+async def cn_end_game(ctx, winning_color):
+
+    # give rewards
+    guild_id = int(ctx.guild.id)
+    cursor = get_cursor()
+    cursor.execute(f"UPDATE users SET balance = balance + {WIN_CODENAMES_REWARD} WHERE id IN (SELECT user FROM members WHERE guild = {guild_id} AND (codenamesroleandcolor = '{winning_color} spymaster' OR codenamesroleandcolor = '{winning_color} operative'))")
+    cursor.execute(f"UPDATE users SET balance = balance + {PLAY_CODENAMES_REWARD} WHERE id IN (SELECT user FROM members WHERE guild = {guild_id} AND (codenamesroleandcolor = '{cn_opposite_color(winning_color)} spymaster' OR codenamesroleandcolor = '{cn_opposite_color(winning_color)} operative'))")
+    cursor.execute(f"UPDATE users SET balance = balance + {DOUBLE_AGENT_REWARD} WHERE id IN (SELECT user FROM members WHERE guild = {guild_id} AND codenamesroleandcolor = 'blue and red operative')")
+
+    # get python list of winning team user ids as strings
+    cursor.execute(f"SELECT user FROM members WHERE guild = {guild_id} AND (codenamesroleandcolor = '{winning_color} spymaster' OR codenamesroleandcolor = '{winning_color} operative')")
+    query_result = cursor.fetchall()
+    winning_user_ids = list(map(lambda player_tuple: str(player_tuple[0]), query_result))
+
+    # get python list of losing team user ids as strings
+    cursor.execute(f"SELECT user FROM members WHERE guild = {guild_id} AND (codenamesroleandcolor = '{cn_opposite_color(winning_color)} spymaster' OR codenamesroleandcolor = '{cn_opposite_color(winning_color)} operative')")
+    query_result = cursor.fetchall()
+    losing_user_ids = list(map(lambda player_tuple: str(player_tuple[0]), query_result))
+
+    # get python list of double agent user ids as strings
+    cursor.execute(f"SELECT user FROM members WHERE guild = {guild_id} AND codenamesroleandcolor = 'blue and red operative'")
+    query_result = cursor.fetchall()
+    double_agent_user_ids = list(map(lambda player_tuple: str(player_tuple[0]), query_result))
+
+    # send victory message and reward info (both will read differently depending on cooperative vs competitive)
+    cursor.execute(f"SELECT COUNT(*) FROM members WHERE guild = {guild_id} AND codenamesroleandcolor = 'blue spymaster'")
+    num_blue_spymasters = cursor.fetchone()[0]
+    cursor.execute(f"SELECT COUNT(*) FROM members WHERE guild = {guild_id} AND codenamesroleandcolor = 'red spymaster'")
+    num_red_spymasters = cursor.fetchone()[0]
+    if num_blue_spymasters and num_red_spymasters: # competitive game
+        double_agent_substring = f"{mention_string_from_id_strings(double_agent_user_ids)}: you get {DOUBLE_AGENT_REWARD} coppers. " if len(double_agent_user_ids) else ""
+        await ctx.send(f"Game over! The **{winning_color}** team won. {mention_string_from_id_strings(winning_user_ids)}: you get {WIN_CODENAMES_REWARD} coppers. {mention_string_from_id_strings(losing_user_ids)}: you get {PLAY_CODENAMES_REWARD} coppers. {double_agent_substring}")
+    else: # cooperative game
+        human_color = 'blue' if num_blue_spymasters else 'red'
+        winning_team = 'human' if human_color == winning_color else 'computer'
+        exclamation = 'congratulations!' if winning_team == 'human' else 'better luck next time!'
+        human_user_ids = winning_user_ids if winning_team == 'human' else losing_user_ids
+        reward = WIN_CODENAMES_REWARD if winning_team == 'human' else PLAY_CODENAMES_REWARD
+        action = 'winning' if winning_team == 'human' else 'playing'
+        await ctx.send(f"Game over! The **{winning_color}** team (the **{winning_team}** team) won--{exclamation} {mention_string_from_id_strings(human_user_ids)}: you get {reward} coppers for {action}.")
+    await ctx.send(f"Good game! Use `{PREFIX}start codenames` to start another.")
+
+    # send the declassified game board
+    await cn_send_declassified_board(ctx)
+    
+    # reset database stuff
+    cursor.execute(f"UPDATE members SET codenamesroleandcolor = NULL WHERE guild = {guild_id}")
+    cursor.execute(f"DELETE FROM activeCodewords WHERE guild={guild_id}")
+    cursor.execute(f"DELETE FROM codenamesGames WHERE guild={guild_id}")
+    db.commit()
+    cursor.close()
+
 ##### CODEWORD #####
 
 @bot.command(help='Suggests a word to be added to the list of codenames words')
 async def codeword(ctx, word):
     # make sure command is being given in a guild context
     if ctx.guild == None:
-        await ctx.send(f"Using this command in a private chat is not allowed.")
+        await ctx.send("Using this command in a private chat is not allowed.")
         return
     
     cursor = get_cursor()
@@ -1018,7 +1079,7 @@ async def quit_game(ctx, game, vote='yes'):
     
     # make sure command is being given in a guild context
     if ctx.guild == None:
-        await ctx.send(f"Using this command in a private chat is not allowed.")
+        await ctx.send("Using this command in a private chat is not allowed.")
         return
 
     # check if valid command
@@ -1160,7 +1221,7 @@ async def quit_game_error(ctx, error):
 async def cancel_game(ctx, game):
     # make sure command is being given in a guild context
     if ctx.guild == None:
-        await ctx.send(f"Using this command in a private chat is not allowed.")
+        await ctx.send("Using this command in a private chat is not allowed.")
         return
 
     # check if valid command
