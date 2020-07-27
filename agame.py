@@ -239,7 +239,7 @@ async def start_codenames(ctx):
         cursor.execute(f"INSERT INTO guilds (id, guildname) VALUES ({ctx.guild.id}, '{guild_name}')")
         db.commit()
     elif query_result[0] != None: # make sure there's not already a start-game going
-        await ctx.send(f"It seems someone else is already trying to start codenames on this server. If this is not the case, use `{PREFIX}cancel codenames` before giving this command again")
+        await ctx.send(f"It seems someone is already trying to start codenames on this server. If this is not the case, use `{PREFIX}cancel codenames` before giving this command again")
         cursor.close()
         return
 
@@ -613,7 +613,7 @@ async def cn_send_spymaster_update(user: discord.User, color, their_words_unreve
     # Build the embed description
     embed_descr = f"**Your Words**\n" + their_words_formatted
     embed_descr += f"\n**Opponent's Words**\n" + other_words_formatted
-    embed_descr += "\n**Neutral Words**\n" + neutral_words_formatted
+    embed_descr += "\n**Neutral Words**" + ("\n" if len(neutral_words_unrevealed) else "") + neutral_words_formatted
     embed_descr += "\n**Assassin Word**\n" + assassin_word
     
     # Build and send embed
@@ -624,16 +624,16 @@ async def cn_send_spymaster_update(user: discord.User, color, their_words_unreve
 async def cn_send_public_update(ctx, next_turn_color, blue_words_revealed, red_words_revealed, neutral_words_revealed, unrevealed_words):
     embed = discord.Embed(title=f"Codenames Board", color=16711935) # magenta
     
-    unrevealed_words_formatted = '\n'.join(unrevealed_words)
+    unrevealed_words_formatted = '\n'.join(unrevealed_words) + '\n'
     embed.add_field(name=f"Unrevealed Words", value=unrevealed_words_formatted, inline=False)
     if len(blue_words_revealed):
-        blue_words_formatted = '\n'.join(blue_words_revealed)
+        blue_words_formatted = '\n'.join(blue_words_revealed) + '\n'
         embed.add_field(name=f"Blue Words", value=blue_words_formatted, inline=False)
     if len(red_words_revealed):
-        red_words_formatted = '\n'.join(red_words_revealed)
+        red_words_formatted = '\n'.join(red_words_revealed) + '\n'
         embed.add_field(name=f"Red Words", value=red_words_formatted, inline=False)
-    if len(red_words_revealed):
-        neutral_words_formatted = '\n'.join(neutral_words_revealed)
+    if len(neutral_words_revealed):
+        neutral_words_formatted = '\n'.join(neutral_words_revealed) + '\n'
         embed.add_field(name=f"Neutral Words", value=neutral_words_formatted, inline=False)
     
     await ctx.send(embed=embed)
@@ -641,18 +641,19 @@ async def cn_send_public_update(ctx, next_turn_color, blue_words_revealed, red_w
 
 async def cn_send_declassified_board(ctx):
     
-    blue_words_unrevealed, blue_words_revealed, red_words_unrevealed, red_words_revealed, neutral_words_unrevealed, neutral_words_revealed, assassin_word = cn_get_word_lists(int(ctx.guild.id))
+    blue_words_unrevealed, blue_words_revealed, red_words_unrevealed, red_words_revealed, neutral_words_unrevealed, neutral_words_revealed, assassin_word, assassin_is_revealed = cn_get_word_lists(int(ctx.guild.id))
 
     # Format each sub-list of words
     blue_words_formatted = '\n'.join(blue_words_unrevealed) + (('\n~~' + '\n'.join(blue_words_revealed) + '~~\n') if len(blue_words_revealed) else '\n')
     red_words_formatted = '\n'.join(red_words_unrevealed) + (('\n~~' + '\n'.join(red_words_revealed) + '~~\n') if len(red_words_revealed) else '\n')
     neutral_words_formatted = '\n'.join(neutral_words_unrevealed) + (('\n~~' + '\n'.join(neutral_words_revealed) + '~~\n') if len(neutral_words_revealed) else '\n')
+    assassin_word_formatted = ("~~" + assassin_word + "~~") if assassin_is_revealed else assassin_word
     
     # Build the embed description
-    embed_descr = f"**Blue Words**\n" + blue_words_formatted
-    embed_descr += f"\n**Red Words**\n" + red_words_formatted
-    embed_descr += "\n**Neutral Words**\n" + neutral_words_formatted
-    embed_descr += "\n**Assassin Word**\n" + assassin_word
+    embed_descr = f"**Blue Words**" + ("\n" if len(blue_words_unrevealed) else "") + blue_words_formatted
+    embed_descr += f"\n**Red Words**" + ("\n" if len(red_words_unrevealed) else "") + red_words_formatted
+    embed_descr += "\n**Neutral Words**" + ("\n" if len(neutral_words_unrevealed) else "") + neutral_words_formatted
+    embed_descr += "\n**Assassin Word**\n" + assassin_word_formatted
     
     # Build and send embed
     embed = discord.Embed(title=f"Codenames Board Declassified", description=embed_descr, color=16711935) # magenta
@@ -764,7 +765,7 @@ async def cnguess(ctx, guess):
     cursor.execute(f"SELECT color FROM activeCodewords WHERE guild = {guild_id} AND word = '{guess}' AND NOT revealed")
     query_result = cursor.fetchone()
     if query_result == None: 
-        await ctx.send(f"**{sql_unescape_single_quotes(guess)}** is not one of the unrevealed words on the board. Please guess one of those")
+        await ctx.send(f"**{sql_unescape_single_quotes(guess)}** is not one of the unrevealed words on the board. Please guess one of those words.")
         cursor.close()
         return
 
@@ -790,12 +791,13 @@ async def cnguess(ctx, guess):
                 db.commit()
                 await ctx.send(f"Use `{PREFIX}cnguess <word>` to guess another word, or use `{PREFIX}cnpass` to end your team's turn.")
             else:
+                await ctx.send("You are now out of guesses, so your turn is over.")
                 await cn_end_turn(ctx)
     elif guess_color == 'assassin':
         await ctx.send(f"OH NOOOO!!! **{guess}** is the **ASSASSIN** word!")
         await cn_end_game(ctx, cn_opposite_color(turn_color))
     else: # they guessed one of the other team's words or a neutral word
-        await ctx.send(f"Whoops: **{guess}** is a **{guess_color}** word.")
+        await ctx.send(f"Whoops: **{guess}** is a **{guess_color}** word. Your turn is over")
         
         # see if they lost
         cursor.execute(f"SELECT COUNT(*) FROM activeCodewords WHERE guild = {guild_id} AND color = '{cn_opposite_color(turn_color)}' AND NOT revealed")
@@ -917,9 +919,11 @@ def cn_get_word_lists(guild_id):
     red_words_revealed = list(map(lambda row: row[0], filter(lambda row: row[1] == 'red' and row[2], words)))
     neutral_words_unrevealed = list(map(lambda row: row[0], filter(lambda row: row[1] == 'neutral' and not row[2], words)))
     neutral_words_revealed = list(map(lambda row: row[0], filter(lambda row: row[1] == 'neutral' and row[2], words)))
-    assassin_word = list(filter(lambda row: row[1] == 'assassin', words))[0][0]
+    assassin_row = list(filter(lambda row: row[1] == 'assassin', words))[0]
+    assassin_word = assassin_row[0]
+    assassin_is_revealed = assassin_row[2]
 
-    return blue_words_unrevealed, blue_words_revealed, red_words_unrevealed, red_words_revealed, neutral_words_unrevealed, neutral_words_revealed, assassin_word
+    return blue_words_unrevealed, blue_words_revealed, red_words_unrevealed, red_words_revealed, neutral_words_unrevealed, neutral_words_revealed, assassin_word, assassin_is_revealed
 
 async def cn_end_turn(ctx):
 
@@ -930,7 +934,7 @@ async def cn_end_turn(ctx):
     prev_turn_color = cursor.fetchone()[0].split()[0]
     next_turn_color = cn_opposite_color(prev_turn_color)
 
-    # check if cooperative or competitive
+    # handle extra steps for a cooperative game
     cursor.execute(f"SELECT COUNT(*) FROM members WHERE guild = {guild_id} AND codenamesroleandcolor LIKE '%spymaster'")
     num_spymasters = cursor.fetchone()[0]
     if num_spymasters == 1: # cooperative game
@@ -943,25 +947,29 @@ async def cn_end_turn(ctx):
         db.commit()
         await ctx.send(f"The computer correctly guesses that **{rev_word}** is **{next_turn_color}**.")
         
-        if len(cpu_unrevealed_words) == 1: # the players lost
+        # check if the human players lost
+        if len(cpu_unrevealed_words) == 1:
             await cn_end_game(ctx, next_turn_color)
+            cursor.close()
+            return
+        
+        # switch next_turrn_color back to the human players'
+        next_turn_color = prev_turn_color
+        
+    # update game state in database
+    cursor.execute(f"UPDATE codenamesGames SET turn = '{next_turn_color} spymaster', numClued = NULL, numGuessed = NULL WHERE guild = {guild_id}")
+    db.commit()
+        
+    # send message updates
+    blue_words_unrevealed, blue_words_revealed, red_words_unrevealed, red_words_revealed, neutral_words_unrevealed, neutral_words_revealed, assassin_word, _ = cn_get_word_lists(guild_id)
+    cursor.execute(f"SELECT user FROM members WHERE guild = {guild_id} AND codenamesroleandcolor = '{next_turn_color} spymaster'")
+    spymaster_id = cursor.fetchone()[0]
+    spymaster = bot.get_user(spymaster_id)
+    cursor.execute(f"SELECT word FROM activeCodewords WHERE guild = {guild_id} AND NOT revealed ORDER BY position")
+    shuffled_unrevealed_word_tuples = cursor.fetchall()
+    shuffled_unrevealed_words = list(map(lambda word_tuple: word_tuple[0], shuffled_unrevealed_word_tuples))
+    await cn_start_spymaster_turn(spymaster, ctx, next_turn_color, blue_words_unrevealed, blue_words_revealed, red_words_unrevealed, red_words_revealed, neutral_words_unrevealed, neutral_words_revealed, assassin_word, shuffled_unrevealed_words)
     
-    else: # competitive game
-        
-        # update database
-        cursor.execute(f"UPDATE codenamesGames SET turn = '{next_turn_color} spymaster', numClued = NULL, numGuessed = NULL WHERE guild = {guild_id}")
-        db.commit()
-        
-        # send message updates
-        blue_words_unrevealed, blue_words_revealed, red_words_unrevealed, red_words_revealed, neutral_words_unrevealed, neutral_words_revealed, assassin_word = cn_get_word_lists(guild_id)
-        cursor.execute(f"SELECT user FROM members WHERE guild = {guild_id} AND codenamesroleandcolor = '{next_turn_color} spymaster'")
-        spymaster_id = cursor.fetchone()[0]
-        spymaster = bot.get_user(spymaster_id)
-        cursor.execute(f"SELECT word FROM activeCodewords WHERE guild = {guild_id} AND NOT revealed ORDER BY position")
-        shuffled_unrevealed_word_tuples = cursor.fetchall()
-        shuffled_unrevealed_words = list(map(lambda word_tuple: word_tuple[0], shuffled_word_tuples))
-        await cn_start_spymaster_turn(spymaster, ctx, next_turn_color, blue_words_unrevealed, blue_words_revealed, red_words_unrevealed, red_words_revealed, neutral_words_unrevealed, neutral_words_revealed, assassin_word, shuffled_unrevealed_words)
-
     cursor.close()
 
 async def cn_end_game(ctx, winning_color):
