@@ -707,13 +707,20 @@ async def cnclue(ctx, word, num):
         await ctx.send(f"**{num}** is not a valid number of words. Please try again")
         return
     
+    guild_id, operatives_channel, turn = validation_results
+    cursor = get_cursor()
+    cursor.execute(f"SELECT COUNT(*) FROM activeCodewords WHERE guild = {guild_id} AND word = '{word}' AND NOT revealed")
+    query_result = cursor.fetchone()[0]
+    if query_result > 0:
+        await ctx.send(f"You may not use one of the unrevealed words as your clue.")
+        cursor.close()
+        return
+
     # let user know their clue was valid
     await ctx.send("Your clue has been submitted!")
 
     # message public channel
-    guild_id, operatives_channel, turn = validation_results
     color = turn.split()[0]
-    cursor = get_cursor()
     cursor.execute(f"SELECT user FROM members WHERE guild = {guild_id} AND codenamesroleandcolor LIKE '%{color}%operative'")
     query_result = cursor.fetchall()
     these_operative_id_strings = list(map(lambda id_tuple: str(id_tuple[0]), query_result))
