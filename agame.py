@@ -402,7 +402,7 @@ async def begin_codenames(ctx, start_msg_id):
     cursor.execute(f"UPDATE guilds SET codenamesstartmsg = NULL WHERE id = {guild_id}")
 
     # set up words
-    cursor.execute(f"SELECT word FROM codewords ORDER BY RAND() LIMIT 25")
+    cursor.execute(f"SELECT word FROM codewords WHERE approved ORDER BY RAND() LIMIT 25")
     query_result = cursor.fetchall()
     words = list(map(lambda word_tuple: word_tuple[0], query_result)) # convert from list of 1-tuples to list of strings
     if cooperative:
