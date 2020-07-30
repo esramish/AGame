@@ -476,7 +476,7 @@ async def begin_codenames(ctx, start_msg_id):
     if second_spymaster != None: # second_spymaster == None in a cooperative game
         await cn_send_spymaster_update(second_spymaster, second_color, second_words, [], starting_words, [], neutral_words, [], assassin_words[0])
         dm_channel = await get_dm_channel(second_spymaster)
-        await dm_channel.send("You'll go second this game—-I'll send you another message when it's your turn")
+        await dm_channel.send("You'll go second this game—I'll send you another message when it's your turn")
 
 def active_codewords_insert_sql(guild_id, word_list, color):
     '''Build a MySQL INSERT string where the VALUES section includes series of (guild, word, color, revealed) groupings separated by commas, to be used when starting codenames.'''
