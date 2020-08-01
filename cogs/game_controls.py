@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 import asyncio
 
 # sys.path.append(sys.path[0][:sys.path[0].index('/cogs')]) # adds the parent directory to the list of paths from which packages can be imported. I don't think it's necessary if running agame.py from that parent directory
-from agame import PREFIX, db, get_cursor
+from agame import PREFIX
 
 GAMES = ['guess', 'codenames']
 CANCELABLE_GAMES = ['codenames']
@@ -55,7 +55,7 @@ class GameControls(commands.Cog, name="Game Controls"):
             await ctx.send(f"**{game}** is not a game that can be \"begun.\" If you're simply trying to start a game, use `{PREFIX}start {game}`")
             return
 
-        cursor = get_cursor()
+        cursor = self.bot.get_cog("General").get_cursor()
 
         # get info about the current state of the game
         # start by checking if the guild is in the guilds table
@@ -98,7 +98,7 @@ class GameControls(commands.Cog, name="Game Controls"):
             await ctx.send(f"**{game}** is not a game that can be quit")
             return
 
-        cursor = get_cursor()
+        cursor = self.bot.get_cog("General").get_cursor()
 
         # get info about the current states of the game/vote countdown in question
         # start by checking if the guild is in the guilds table
@@ -134,7 +134,7 @@ class GameControls(commands.Cog, name="Game Controls"):
             
             # set all votes to null, except the person who gave the command
             cursor.execute(f"UPDATE members SET votetoquit{game} = NULL WHERE guild = {ctx.guild.id}")
-            db.commit()
+            self.bot.get_cog("General").db.commit()
             cursor.execute(f"SELECT * from members WHERE user = {ctx.author.id} AND guild = {ctx.guild.id}")
             query_result = cursor.fetchall()
             if len(query_result) == 0:
@@ -146,7 +146,7 @@ class GameControls(commands.Cog, name="Game Controls"):
             deadline = datetime.strftime(datetime.utcnow() + timedelta(minutes=1), '%Y-%m-%d %H:%M:%S')
             cursor.execute(f"UPDATE guilds SET {game}quitvotedeadline = '{deadline}' where id={ctx.guild.id}")
             
-            db.commit()
+            self.bot.get_cog("General").db.commit()
             cursor.close()
 
             # send a message to the context
@@ -174,7 +174,7 @@ class GameControls(commands.Cog, name="Game Controls"):
         else:
             cursor.execute(f"UPDATE members SET votetoquit{game} = {wants_to_quit} WHERE user = {ctx.author.id} AND guild = {ctx.guild.id}")
         
-        db.commit()
+        self.bot.get_cog("General").db.commit()
         cursor.close()
         
         await ctx.send(f"{ctx.author.name} votes to **{'end' if wants_to_quit else 'continue'}** the {game} game")
@@ -182,12 +182,12 @@ class GameControls(commands.Cog, name="Game Controls"):
     async def quit_timer(self, ctx, game):
         await asyncio.sleep(60)
         
-        cursor = get_cursor()
+        cursor = self.bot.get_cog("General").get_cursor()
         guild_id = int(ctx.guild.id)
 
         # clear deadline in database
         cursor.execute(f"UPDATE guilds SET {game}quitvotedeadline = NULL WHERE id={guild_id}")
-        db.commit()
+        self.bot.get_cog("General").db.commit()
         
         # address the results
         cursor.execute(f"SELECT votetoquit{game} FROM members WHERE guild = {guild_id}")
@@ -204,7 +204,7 @@ class GameControls(commands.Cog, name="Game Controls"):
                 cursor.execute(f"SELECT currword FROM guilds WHERE id={guild_id}")
                 await ctx.send(f"My word was **{cursor.fetchone()[0]}**")
                 cursor.execute(f"UPDATE guilds SET currword = NULL where id={guild_id}")
-                db.commit()
+                self.bot.get_cog("General").db.commit()
             elif game=='codenames':
                 # send the declassified game board
                 await self.bot.get_cog('Codenames').cn_send_declassified_board(ctx)
@@ -213,7 +213,7 @@ class GameControls(commands.Cog, name="Game Controls"):
                 cursor.execute(f"UPDATE members SET codenamesroleandcolor = NULL WHERE guild = {guild_id}")
                 cursor.execute(f"DELETE FROM activeCodewords WHERE guild={guild_id}")
                 cursor.execute(f"DELETE FROM codenamesGames WHERE guild={guild_id}")
-                db.commit()
+                self.bot.get_cog("General").db.commit()
             # can add more games here with elifs
         else: 
             await ctx.send(f"Time's up! The people have spoken: they've voted {len(neas)}-{len(yeas)} to **continue** the {game} game.")
@@ -238,7 +238,7 @@ class GameControls(commands.Cog, name="Game Controls"):
             await ctx.send(f"**{game}** is not a game that can be cancelled. If you're trying to quit an in-progress game, use `{PREFIX}quit {game}`")
             return
 
-        cursor = get_cursor()
+        cursor = self.bot.get_cog("General").get_cursor()
 
         # get info about the current state of the game
         # start by checking if the guild is in the guilds table
@@ -254,7 +254,7 @@ class GameControls(commands.Cog, name="Game Controls"):
         if game=='codenames':
             if query_result[0] != None:
                 cursor.execute(f"UPDATE guilds SET codenamesstartmsg = NULL WHERE id={ctx.guild.id}")
-                db.commit()
+                self.bot.get_cog("General").db.commit()
                 game_cancelled = True
         # can add more games with elifs here
 

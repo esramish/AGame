@@ -4,7 +4,7 @@ import random
 import pickle
 
 # sys.path.append(sys.path[0][:sys.path[0].index('/cogs')]) # adds the parent directory to the list of paths from which packages can be imported. I don't think it's necessary if running agame.py from that parent directory
-from agame import PREFIX, db, get_cursor, sql_escape_single_quotes, mention_string_from_id_strings
+from agame import PREFIX, sql_escape_single_quotes, mention_string_from_id_strings
 
 # load 5-letter words
 with open('5-letter_words.pkl', 'rb') as f:
@@ -19,7 +19,7 @@ class Guess(commands.Cog):
         self.bot = bot
     
     async def start_guess(self, ctx):
-        cursor = get_cursor()
+        cursor = self.bot.get_cog("General").get_cursor()
         
         guild_name = sql_escape_single_quotes(ctx.guild.name)
         cursor.execute(f"SELECT currword FROM guilds where id={ctx.guild.id}")
@@ -27,11 +27,11 @@ class Guess(commands.Cog):
         word = random.choice(FIVE_LETTER_WORDS)
         if len(query_result) == 0: # guild's not in the database yet, so add them in with a new word
             cursor.execute(f"INSERT INTO guilds (id, guildname, currword) VALUES ({ctx.guild.id}, '{guild_name}', '{word}')")
-            db.commit()
+            self.bot.get_cog("General").db.commit()
         else:
             if query_result[0][0] == None: # ideal case, where they just want to start a new game
                 cursor.execute(f"UPDATE guilds SET currword = '{word}' where id = {ctx.guild.id}")
-                db.commit()
+                self.bot.get_cog("General").db.commit()
             else: # there's already a game going on, so complain to the user
                 await ctx.send(f"There's already a guess game going on. Use `{PREFIX}guess <word>` to guess a word.")
                 cursor.close()
@@ -49,7 +49,7 @@ class Guess(commands.Cog):
             await ctx.send("Using this command in a private chat is not allowed.")
             return
         
-        cursor = get_cursor()
+        cursor = self.bot.get_cog("General").get_cursor()
 
         cursor.execute(f"SELECT currword FROM guilds where id={ctx.guild.id}")
         query_result = cursor.fetchall()
@@ -81,7 +81,7 @@ class Guess(commands.Cog):
         query_result = cursor.fetchall()
         if len(query_result) == 0: # user's not in the users table yet, so add them in with balance of 0
             cursor.execute(f"INSERT INTO users (id, username, balance) VALUES ({ctx.author.id}, '{author}', 0)")
-        db.commit()
+        self.bot.get_cog("General").db.commit()
 
         # evaluate the guess
         if guess == word: # winning guess!
@@ -106,7 +106,7 @@ class Guess(commands.Cog):
             cursor.execute(f"UPDATE members SET playingguess = NULL WHERE guild = {ctx.guild.id}")
 
             # commit and close
-            db.commit()
+            self.bot.get_cog("General").db.commit()
             cursor.close()
             
             # send message to context
