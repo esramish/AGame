@@ -81,7 +81,7 @@ if __name__ == "__main__":
     bot.add_cog(General(bot))
     
     # load extensions
-    initial_extensions = ['cogs.guess', 'cogs.codenames', 'cogs.game_controls', 'cogs.money']
+    initial_extensions = ['cogs.guess', 'cogs.codenames',  'cogs.escape', 'cogs.game_controls', 'cogs.money']
     for extension in initial_extensions:
         try:
             bot.load_extension(extension)
@@ -97,5 +97,6 @@ if __name__ == "__main__":
         cursor.execute("CREATE TABLE IF NOT EXISTS codewords (id INT PRIMARY KEY AUTO_INCREMENT, suggestor BIGINT, suggestionmsg BIGINT, word VARCHAR(45), approved BIT)")
         cursor.execute("CREATE TABLE IF NOT EXISTS activeCodewords (id INT PRIMARY KEY AUTO_INCREMENT, guild BIGINT, word VARCHAR(45), color varchar(10), revealed BIT, position FLOAT)")
         cursor.execute("CREATE TABLE IF NOT EXISTS codenamesGames (id INT PRIMARY KEY AUTO_INCREMENT, guild BIGINT, opsChannel BIGINT, turn VARCHAR(25), numClued INT, numGuessed INT)")
+        cursor.execute("CREATE TABLE IF NOT EXISTS escapeGames (id INT PRIMARY KEY AUTO_INCREMENT, guild BIGINT, stage INT)")
 
     bot.run(TOKEN)

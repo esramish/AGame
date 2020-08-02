@@ -6,7 +6,8 @@ import asyncio
 # sys.path.append(sys.path[0][:sys.path[0].index('/cogs')]) # adds the parent directory to the list of paths from which packages can be imported. I don't think it's necessary if running agame.py from that parent directory
 from agame import PREFIX
 
-GAMES = ['guess', 'codenames']
+GAMES = ['guess', 'codenames', 'escape']
+QUITTABLE_GAMES = ['guess', 'codenames']
 CANCELABLE_GAMES = ['codenames']
 
 class GameControls(commands.Cog, name="Game Controls"):
@@ -27,7 +28,7 @@ class GameControls(commands.Cog, name="Game Controls"):
             return
         
         # check if valid command
-        if game not in GAMES:
+        if game not in QUITTABLE_GAMES:
             await ctx.send(f"**{game}** is not a game that can be started")
             return
 
@@ -94,7 +95,7 @@ class GameControls(commands.Cog, name="Game Controls"):
             return
 
         # check if valid command
-        if game not in GAMES:
+        if game not in QUITTABLE_GAMES:
             await ctx.send(f"**{game}** is not a game that can be quit")
             return
 
