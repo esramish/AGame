@@ -78,11 +78,23 @@ class Escape(commands.Cog):
             await ctx.send(f"To play the escape room, send a command formatted like `{PREFIX}escape touch the black ball` or `{PREFIX}escape enter 32 16 23 on combo lock #3` or `{PREFIX}escape inspect the north wall`")
             return
 
+        # handle cases where the user wants to view an image
+        if words[0].lower() == 'view' and len(words) >= 3:
+            try: 
+                await self.send_image(ctx, words[1], words[2].lower())
+                return
+            except FileNotFoundError:
+                pass
+
         # process the user's action
         try: 
             await self.stage_methods[stage](ctx, " ".join(words))
         except IndexError: # the guild has completed all stages implemented so far
             await ctx.send("The room is black—pitch black. You can hear, smell, and feel nothing. You wait for your senses to adjust (or perhaps for the developer to build a puzzle or two) before taking any more actions.")
+        
+    async def send_image(self, ctx, stage, image_code):
+        with open(os.path.join(ROOT_FILES_DIR, str(stage), str(stage) + "-" + image_code + ".png"), "rb") as f:
+            await ctx.send(file=discord.File(f, filename=f"{stage}-{image_code}.png"))
 
     def check_if_action(self, user_str, *action_expr_lists, req_ordered=False, ignore_case=True):
         '''Return a boolean representing whether or not all of the regular expressions of any one of action_expr_lists match (in order, if req_ordered) user_str'''
@@ -104,10 +116,6 @@ class Escape(commands.Cog):
                 user_str = user_str[match.end():]
         return True
 
-    async def send_image(self, stage, image_code):
-        with open(os.path.join(ROOT_FILES_DIR, str(stage), image_code), "rb") as f:
-            await ctx.send(file=discord.File(f, filename=f"{stage}-{image_code}"))
-
     async def stage_0(self, ctx, action_str):
         '''Initial room'''
         guild_id = int(ctx.guild.id)
@@ -121,10 +129,8 @@ class Escape(commands.Cog):
         # ceiling
         elif self.check_if_action(action_str, [r'look|check|see|inspect|examine|describe', r'up|roof|ceiling']): 
             await ctx.send("OMG, what a work of art there is on the ceiling! It looks like this:")
-            await self.send_image(0, '2b8ac9')
-            await ctx.send(f"You can use `{PREFIX}escape view 0-2b8ac9` to view this image again")
-        elif self.check_if_action(action_str, "view 0-2b8ac9"):
-            await self.send_image(0, '2b8ac9')
+            await self.send_image(ctx, 0, '2b8ac9')
+            await ctx.send(f"You can use `{PREFIX}escape view 0 2b8ac9` to view this image again")
         elif False:
             # advance them to stage 1
             cursor = self.bot.get_cog("General").get_cursor()
