@@ -31,45 +31,38 @@ class Codenames(commands.Cog):
             await ctx.send("Using this command in a private chat is not allowed.")
             return
         
-        cursor = self.bot.get_cog("General").get_cursor()
+        cursor = self.bot.get_cog("General").get_cursor("prepared")
         
         # make sure the user is in the users table, so they can be rewarded if their suggestion is approved
-        author = sql_escape_single_quotes(ctx.author.name)
-        cursor.execute(f"SELECT balance FROM users where id={int(ctx.author.id)}")
+        author_id = int(ctx.author.id)
+        cursor.execute("SELECT balance FROM users where id=%s", (author_id,))
         query_result = cursor.fetchall()
         if len(query_result) == 0: # user's not in the users table yet, so add them in with balance of 0
-            cursor.execute(f"INSERT INTO users (id, username, balance) VALUES ({int(ctx.author.id)}, '{author}', 0)")
-        self.bot.get_cog("General").db.commit()
-
-        # format word, and escape word for SQL
-        word = word.lower()
-        unescaped_word = word
-        word = sql_escape_single_quotes(word)
+            cursor.execute("INSERT INTO users (id, username, balance) VALUES (%s, %s, 0)", (author_id, ctx.author.name))
         
         # check if word was recently suggested or already approved
-        cursor.execute(f"SELECT suggestion_time, approved FROM codewords WHERE word='{word}'")
-        query_result = cursor.fetchone()
-        if query_result != None:
-            suggestion_time, approved = query_result
+        word = word.lower()
+        cursor.execute("SELECT suggestion_time, approved FROM codewords WHERE word=%s", (word,))
+        query_result = cursor.fetchall()
+        if len(query_result) != 0:
+            suggestion_time, approved = query_result[0]
             if approved:
-                await ctx.send(f"Someone already added the word **{unescaped_word}**")
+                await ctx.send(f"Someone already added the word **{word}**")
                 cursor.close()
                 return
             elif datetime.utcnow() - suggestion_time < timedelta(days=1):
-                await ctx.send(f"Someone already suggested the word **{unescaped_word}**. If it still isn't approved in 24 hours, try suggesting it again")
+                await ctx.send(f"Someone already suggested the word **{word}**. If it still isn't approved in 24 hours, try suggesting it again")
                 cursor.close()
                 return
             else: # there is an entry for this word in the database, but it's old an unapproved, so let's delete it and let the user add a new one
-                cursor.execute(f"DELETE FROM codewords WHERE word='{word}'")
-                self.bot.get_cog("General").db.commit()
+                cursor.execute("DELETE FROM codewords WHERE word=%s", (word,))
 
         # send voting message
         message = await ctx.send(f"React {CODEWORD_VOTE_EMOJI} to this message to approve the codenames word **{word}**! {NUM_CODEWORD_REQ_VOTES} more vote{'s' if NUM_CODEWORD_REQ_VOTES != 1 else ''} needed")
         await message.add_reaction(CODEWORD_VOTE_EMOJI)
 
         # insert word candidate into database
-        cursor.execute(f"INSERT INTO codewords (suggestor, suggestionmsg, word, approved, suggestion_time) VALUES ({int(ctx.author.id)}, {int(message.id)}, '{word}', 0, '{datetime.strftime(datetime.utcnow(), '%Y-%m-%d %H:%M:%S')}')")
-        self.bot.get_cog("General").db.commit()
+        cursor.execute("INSERT INTO codewords (suggestor, suggestionmsg, word, approved, suggestion_time) VALUES (%s, %s, %s, %s, %s)", (int(ctx.author.id), int(message.id), word, 0, datetime.strftime(datetime.utcnow(), '%Y-%m-%d %H:%M:%S')))
         cursor.close()
 
     @codeword.error
@@ -84,7 +77,7 @@ class Codenames(commands.Cog):
         # check if the reaction in question is the codeword vote emoji
         if reaction.emoji != CODEWORD_VOTE_EMOJI: return
 
-        cursor = self.bot.get_cog("General").get_cursor()
+        cursor = self.bot.get_cog("General").get_cursor("buffered")
 
         # see if it was a reaction to a codeword suggestion message
         cursor.execute(f"SELECT id, suggestor, word, approved FROM codewords WHERE suggestionmsg = {int(reaction.message.id)}")
@@ -110,9 +103,6 @@ class Codenames(commands.Cog):
                 # reward the user
                 cursor.execute(f"UPDATE users SET balance = balance + {CODEWORD_REWARD} WHERE id = {suggestor_id}")
 
-                # commit
-                self.bot.get_cog("General").db.commit()
-
                 # send a message notifying of the approval and reward
                 await reaction.message.channel.send(f"Added the word **{word}** to codenames. {CODEWORD_REWARD} copper to {self.bot.get_user(suggestor_id).display_name} for the suggestion!")
             if further_reactions_needed >= 0: 
@@ -123,25 +113,24 @@ class Codenames(commands.Cog):
         cursor.close()
 
     async def start_codenames(self, ctx):
-        cursor = self.bot.get_cog("General").get_cursor()
+        cursor = self.bot.get_cog("General").get_cursor("prepared")
         guild_id = int(ctx.guild.id)
-        guild_name = sql_escape_single_quotes(ctx.guild.name)
+        guild_name = ctx.guild.name
 
         # make sure there's not already a game going
-        cursor.execute(f"SELECT * FROM activeCodewords WHERE guild = {guild_id}")
-        query_result = cursor.fetchone()
-        if query_result != None:
+        cursor.execute("SELECT * FROM activeCodewords WHERE guild = %s", (guild_id,))
+        query_result = cursor.fetchall()
+        if len(query_result) != 0:
             await ctx.send("There's already a codenames game in progress on this server--sorry!")
             cursor.close()
             return
 
-        cursor.execute(f"SELECT codenamesstartmsg FROM guilds WHERE id = {guild_id}")
-        query_result = cursor.fetchone()
+        cursor.execute("SELECT codenamesstartmsg FROM guilds WHERE id = %s", (guild_id,))
+        query_result = cursor.fetchall()
         
-        if query_result == None: # make sure the guild is in the guilds table
-            cursor.execute(f"INSERT INTO guilds (id, guildname) VALUES ({ctx.guild.id}, '{guild_name}')")
-            self.bot.get_cog("General").db.commit()
-        elif query_result[0] != None: # make sure there's not already a start-game going
+        if len(query_result) == 0: # need to add the guild to the guilds table
+            cursor.execute("INSERT INTO guilds (id, guildname) VALUES (%s, %s)", (guild_id, guild_name))
+        elif query_result[0][0] != None: # there's already a start-game going
             await ctx.send(f"It seems someone is already trying to start codenames on this server. If this is not the case, use `{PREFIX}cancel codenames` before giving this command again")
             cursor.close()
             return
@@ -153,8 +142,7 @@ class Codenames(commands.Cog):
         message = await ctx.send(embed=embed)
 
         # get the id of this message and store it in the guilds table
-        cursor.execute(f"UPDATE guilds SET codenamesstartmsg = {int(message.id)} WHERE id = {guild_id}")
-        self.bot.get_cog("General").db.commit()
+        cursor.execute("UPDATE guilds SET codenamesstartmsg = %s WHERE id = %s", (int(message.id), guild_id))
 
         # set up the reactions
         await message.add_reaction(BLUE_SPY_EMOJI)

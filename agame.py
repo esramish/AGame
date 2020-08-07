@@ -49,11 +49,18 @@ class General(commands.Cog):
         self.bot = bot
         self.db = get_new_db_connection()
 
-    def get_cursor(self):
+    def get_cursor(self, cursor_type):
         if not self.db.is_connected():
             self.db = get_new_db_connection()
             print(f"Reconnected to database at {datetime.utcnow()}")
-        return self.db.cursor(buffered=True)
+        if cursor_type == "normal": # avoid using this with SELECT statements--requires programmer to fetch all the rows before executing another statement on the same connection
+            return self.db.cursor()
+        elif cursor_type == "buffered": # fine for use with statements where injection isn't a concern
+            return self.db.cursor(buffered=True)
+        elif cursor_type == "prepared": # use this, together with parameterized queries, when injection is a concern
+            return self.db.cursor(prepared=True)
+        else:
+            raise ValueError()
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -90,7 +97,7 @@ if __name__ == "__main__":
             traceback.print_exc()
     
     # make sure certain database tables exist
-    with bot.get_cog("General").get_cursor() as cursor:
+    with bot.get_cog("General").get_cursor("normal") as cursor:
         cursor.execute("CREATE TABLE IF NOT EXISTS users (id BIGINT PRIMARY KEY, username VARCHAR(255), balance INT)")
         cursor.execute("CREATE TABLE IF NOT EXISTS guilds (id BIGINT PRIMARY KEY, guildname VARCHAR(255), currword VARCHAR(10), guessquitvotedeadline DATETIME, codenamesstartmsg BIGINT, codenamesquitvotedeadline DATETIME)")
         cursor.execute("CREATE TABLE IF NOT EXISTS members (id INT PRIMARY KEY AUTO_INCREMENT, user BIGINT NOT NULL, guild BIGINT NOT NULL, votetoquitguess BIT, playingguess BIT, votetoquitcodenames BIT, codenamesroleandcolor VARCHAR(25))")
