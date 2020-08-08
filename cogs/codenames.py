@@ -194,7 +194,7 @@ class Codenames(commands.Cog):
                 return
 
         # make sure no user is already in a codenames game on another server
-        cursor = self.bot.get_cog("General").get_cursor()
+        cursor = self.bot.get_cog("General").get_cursor("buffered")
         comma_separated_player_ids = comma_separated_ids_from_user_list(players)
         cursor.execute(f"SELECT user FROM members WHERE user IN ({comma_separated_player_ids}) AND codenamesroleandcolor IS NOT NULL")
         query_result = cursor.fetchall()
@@ -213,12 +213,12 @@ class Codenames(commands.Cog):
             if query_result == None:
                 cursor.execute(f"INSERT INTO members (user, guild) VALUES ({user_id}, {guild_id})")
 
-            username = sql_escape_single_quotes(user.name)
             cursor.execute(f"SELECT * FROM users where id={user_id}")
             query_result = cursor.fetchone()
             if query_result == None: # user's not in the users table yet, so add them in with balance of 0
-                cursor.execute(f"INSERT INTO users (id, username, balance) VALUES ({user_id}, '{username}', 0)")
-        self.bot.get_cog("General").db.commit()
+                prepared_cursor = self.bot.get_cog("General").get_cursor("prepared")
+                prepared_cursor.execute("INSERT INTO users (id, username, balance) VALUES (%s, %s, 0)", (user_id, user.name))
+                prepared_cursor.close()
 
         # assign users their new roles in the members table (making them all operatives of the spymaster's color in a cooperative game, and making the operative both colors in a competitive 3-player game)
         # spymasters
@@ -248,7 +248,7 @@ class Codenames(commands.Cog):
         cursor.execute(f"UPDATE guilds SET codenamesstartmsg = NULL WHERE id = {guild_id}")
 
         # set up words
-        cursor.execute(f"SELECT word FROM codewords WHERE approved ORDER BY RAND() LIMIT 25")
+        cursor.execute("SELECT word FROM codewords WHERE approved ORDER BY RAND() LIMIT 25")
         query_result = cursor.fetchall()
         words = list(map(lambda word_tuple: word_tuple[0], query_result)) # convert from list of 1-tuples to list of strings
         if cooperative:
@@ -260,16 +260,18 @@ class Codenames(commands.Cog):
         red_words = words[red_start_index:17]
         neutral_words = words[17:24]
         assassin_words = words[24:]
-        cursor.execute(self.active_codewords_insert_sql(guild_id, blue_words, "blue"))
-        cursor.execute(self.active_codewords_insert_sql(guild_id, red_words, "red"))
-        cursor.execute(self.active_codewords_insert_sql(guild_id, neutral_words, "neutral"))
-        cursor.execute(self.active_codewords_insert_sql(guild_id, assassin_words, "assassin"))
+        
+        prepared_cursor = self.bot.get_cog("General").get_cursor("prepared")
+        prepared_cursor.execute(*self.active_codewords_insert_sql(guild_id, blue_words, "blue"))
+        prepared_cursor.execute(*self.active_codewords_insert_sql(guild_id, red_words, "red"))
+        prepared_cursor.execute(*self.active_codewords_insert_sql(guild_id, neutral_words, "neutral"))
+        prepared_cursor.execute(*self.active_codewords_insert_sql(guild_id, assassin_words, "assassin"))
+        prepared_cursor.close()
         
         # insert an entry for the game into the codenamesGames table (but don't worry about initializing the entire row yet)
         cursor.execute(f"INSERT INTO codenamesGames (guild, opsChannel) VALUES ({guild_id}, {int(ctx.channel.id)})")
 
-        # commit, get the shuffled words, and close the cursor
-        self.bot.get_cog("General").db.commit()
+        # get the shuffled words close the cursor
         cursor.execute(f"SELECT word FROM activeCodewords WHERE guild = {guild_id} ORDER BY position")
         shuffled_word_tuples = cursor.fetchall()
         shuffled_words = list(map(lambda word_tuple: word_tuple[0], shuffled_word_tuples))
@@ -325,10 +327,13 @@ class Codenames(commands.Cog):
             await dm_channel.send("You'll go second this game—I'll send you another message when it's your turn")
 
     def active_codewords_insert_sql(self, guild_id, word_list, color):
-        '''Build a MySQL INSERT string where the VALUES section includes series of (guild, word, color, revealed) groupings separated by commas, to be used when starting codenames.'''
-        values_groupings_list = list(map(lambda word: f"({int(guild_id)}, '{word}', '{color}', 0, RAND())", word_list))
-        values_section = ", ".join(values_groupings_list)
-        return f"INSERT INTO activeCodewords (guild, word, color, revealed, position) VALUES {values_section}"
+        '''Build a parameterized MySQL INSERT query where the VALUES section includes series of (guild, word, color, revealed, position) groupings separated by commas, to be used when starting codenames.
+        Thanks, for part of this idea, to https://stackoverflow.com/questions/283645/python-list-in-sql-query-as-parameter/283801#283801'''
+        values_list = []
+        for word in word_list:
+            values_list += [int(guild_id), word, color]
+        values_string_section = ", ".join(["(%s, %s, %s, 0, RAND())"] * len(word_list))
+        return f"INSERT INTO activeCodewords (guild, word, color, revealed, position) VALUES {values_string_section}", values_list
 
     async def cn_send_spymaster_update(self, user: discord.User, color, their_words_unrevealed, their_words_revealed, other_words_unrevealed, other_words_revealed, neutral_words_unrevealed, neutral_words_revealed, assassin_word):
         
