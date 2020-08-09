@@ -5,7 +5,7 @@ import random
 from datetime import datetime, timedelta
 
 # sys.path.append(sys.path[0][:sys.path[0].index('/cogs')]) # adds the parent directory to the list of paths from which packages can be imported. I don't think it's necessary if running agame.py from that parent directory
-from agame import PREFIX, sql_escape_single_quotes, sql_unescape_single_quotes, mention_string_from_id_strings, comma_separated_ids_from_user_list, get_dm_channel
+from agame import PREFIX, mention_string_from_id_strings, comma_separated_ids_from_user_list, get_dm_channel
 
 NUM_CODEWORD_REQ_VOTES = 2
 CODEWORD_VOTE_EMOJI = '👍'
@@ -414,9 +414,8 @@ class Codenames(commands.Cog):
         await self.cn_send_public_update(guild_ctx, color, blue_words_revealed, red_words_revealed, neutral_words_revealed, shuffled_unrevealed_words)
 
         # update database
-        cursor = self.bot.get_cog("General").get_cursor()
+        cursor = self.bot.get_cog("General").get_cursor("buffered")
         cursor.execute(f"UPDATE codenamesGames SET turn = '{color} spymaster', numClued = NULL, numGuessed = NULL WHERE guild = {int(guild_ctx.guild.id)}")
-        self.bot.get_cog("General").db.commit()
         cursor.close()
 
     @commands.command(help='Gives a clue, as a codenames spymaster')
@@ -427,7 +426,6 @@ class Codenames(commands.Cog):
         if validation_results == None: return
         
         # finish making sure the clue is valid
-        word = sql_escape_single_quotes(word)
         try: 
             num = int(num)
         except ValueError: 
@@ -441,8 +439,8 @@ class Codenames(commands.Cog):
             return
         
         guild_id, operatives_channel, turn = validation_results
-        cursor = self.bot.get_cog("General").get_cursor()
-        cursor.execute(f"SELECT COUNT(*) FROM activeCodewords WHERE guild = {guild_id} AND word = '{word}' AND NOT revealed")
+        cursor = self.bot.get_cog("General").get_cursor("prepared")
+        cursor.execute("SELECT COUNT(*) FROM activeCodewords WHERE guild = %s AND word = %s AND NOT revealed", (guild_id, word))
         query_result = cursor.fetchone()[0]
         if query_result > 0:
             await ctx.send(f"You may not use one of the unrevealed words as your clue.")
@@ -454,23 +452,22 @@ class Codenames(commands.Cog):
 
         # message public channel
         color = turn.split()[0]
-        cursor.execute(f"SELECT user FROM members WHERE guild = {guild_id} AND codenamesroleandcolor LIKE '%{color}%operative'")
+        cursor.execute("SELECT user FROM members WHERE guild = %s AND codenamesroleandcolor LIKE %s", (guild_id, f'%{color}%operative'))
         query_result = cursor.fetchall()
         these_operative_id_strings = list(map(lambda id_tuple: str(id_tuple[0]), query_result))
-        cursor.execute(f"SELECT COUNT(word) FROM activeCodewords WHERE guild = {guild_id} AND color = '{color}' AND NOT revealed")
+        cursor.execute("SELECT COUNT(word) FROM activeCodewords WHERE guild = %s AND color = %s AND NOT revealed", (guild_id, color))
         count_their_unrevealed = cursor.fetchone()[0]
         if num <= count_their_unrevealed:
             num_str = str(num)
         else:
             num_str = "infinity"
             num = -1
-        cursor.execute(f"SELECT word FROM activeCodewords WHERE guild = {guild_id} AND NOT revealed ORDER BY position LIMIT 1")
+        cursor.execute("SELECT word FROM activeCodewords WHERE guild = %s AND NOT revealed ORDER BY position LIMIT 1", (guild_id,))
         unrevealed_word_example = cursor.fetchone()[0]
         await self.bot.get_channel(operatives_channel).send(f"{mention_string_from_id_strings(these_operative_id_strings)} ({color} operatives): your turn! Your clue is **{word} {num_str}**. Use `{PREFIX}cnguess <word>` (e.g. `{PREFIX}cnguess {unrevealed_word_example}`) to guess a word that you think is the {color} team's.")
 
         # update database
-        cursor.execute(f"UPDATE codenamesGames SET turn = '{color} operative', numClued = {num}, numGuessed = 0 WHERE guild = {guild_id}")
-        self.bot.get_cog("General").db.commit()
+        cursor.execute("UPDATE codenamesGames SET turn = %s, numClued = %s, numGuessed = 0 WHERE guild = %s", (f'{color} operative', num, guild_id))
         cursor.close()
 
     @cnclue.error
@@ -487,8 +484,6 @@ class Codenames(commands.Cog):
 
     @commands.command(help='Guesses a word, as a codenames operative')
     async def cnguess(self, ctx, guess):
-        
-        guess = sql_escape_single_quotes(guess)
 
         # make sure it's not in a private channel
         if ctx.guild == None:
@@ -501,17 +496,16 @@ class Codenames(commands.Cog):
         
         # make sure the word is a guessable word
         guild_id, turn_color, _ = validation_results
-        cursor = self.bot.get_cog("General").get_cursor()
-        cursor.execute(f"SELECT color FROM activeCodewords WHERE guild = {guild_id} AND word = '{guess}' AND NOT revealed")
+        cursor = self.bot.get_cog("General").get_cursor("prepared")
+        cursor.execute("SELECT color FROM activeCodewords WHERE guild = %s AND word = %s AND NOT revealed", (guild_id, guess))
         query_result = cursor.fetchone()
         if query_result == None: 
-            await ctx.send(f"**{sql_unescape_single_quotes(guess)}** is not one of the unrevealed words on the board. Please guess one of those words.")
+            await ctx.send(f"**{guess}** is not one of the unrevealed words on the board. Please guess one of those words.")
             cursor.close()
             return
 
         # mark word as revealed
-        cursor.execute(f"UPDATE activeCodewords SET revealed = 1 WHERE guild = {guild_id} AND word = '{guess}'")
-        self.bot.get_cog("General").db.commit()
+        cursor.execute("UPDATE activeCodewords SET revealed = 1 WHERE guild = %s AND word = %s", (guild_id, guess))
         
         # evaluate guess
         guess_color = query_result[0]
@@ -519,16 +513,15 @@ class Codenames(commands.Cog):
             await ctx.send(f"Nice! **{guess}** is a **{turn_color}** word.")
             
             # see if they won
-            cursor.execute(f"SELECT COUNT(*) FROM activeCodewords WHERE guild = {guild_id} AND color = '{turn_color}' AND NOT revealed")
+            cursor.execute("SELECT COUNT(*) FROM activeCodewords WHERE guild = %s AND color = %s AND NOT revealed", (guild_id, turn_color))
             count_their_unrevealed = cursor.fetchone()[0]
             if count_their_unrevealed == 0: # they won
                 await self.cn_end_game(ctx, turn_color)
             else: # they didn't win
-                cursor.execute(f"SELECT numClued, numGuessed FROM codenamesGames WHERE guild = {guild_id}")
+                cursor.execute("SELECT numClued, numGuessed FROM codenamesGames WHERE guild = %s", (guild_id,))
                 num_clued, num_guessed = cursor.fetchone()
                 if num_clued < 1 or num_guessed < num_clued: # they're still allowed more guesses (since if num_clued >= 1, they're allowed num_clued + 1 guesses, and we haven't updated num_guessed with this guess yet)
-                    cursor.execute(f"UPDATE codenamesGames SET numGuessed = numGuessed + 1 WHERE guild = {guild_id}")
-                    self.bot.get_cog("General").db.commit()
+                    cursor.execute("UPDATE codenamesGames SET numGuessed = numGuessed + 1 WHERE guild = %s", (guild_id,))
                     await ctx.send(f"Use `{PREFIX}cnguess <word>` to guess another word, or use `{PREFIX}cnpass` to end your team's turn.")
                 else:
                     await ctx.send("You are now out of guesses, so your turn is over.")
@@ -540,7 +533,7 @@ class Codenames(commands.Cog):
             await ctx.send(f"Whoops: **{guess}** is a **{guess_color}** word. Your turn is over")
             
             # see if they lost
-            cursor.execute(f"SELECT COUNT(*) FROM activeCodewords WHERE guild = {guild_id} AND color = '{self.cn_opposite_color(turn_color)}' AND NOT revealed")
+            cursor.execute("SELECT COUNT(*) FROM activeCodewords WHERE guild = %s AND color = %s AND NOT revealed", (guild_id, self.cn_opposite_color(turn_color)))
             count_other_unrevealed = cursor.fetchone()[0]
             if count_other_unrevealed == 0: # they lost
                 await self.cn_end_game(ctx, self.cn_opposite_color(turn_color))
@@ -556,9 +549,9 @@ class Codenames(commands.Cog):
         validation_results = await self.cn_validate_operative(ctx)
         if validation_results == None: return
         
-        # okay, just respond to the malformatted comman
+        # okay, just respond to the malformatted command
         guild_id = validation_results[0]
-        cursor = self.bot.get_cog("General").get_cursor()
+        cursor = self.bot.get_cog("General").get_cursor("buffered")
         cursor.execute(f"SELECT word FROM activeCodewords WHERE guild = {guild_id} AND NOT revealed ORDER BY position LIMIT 1")
         unrevealed_word_example = cursor.fetchone()[0]
         cursor.close()
@@ -591,7 +584,7 @@ class Codenames(commands.Cog):
         
         # are they a spymasteer
         author_id = int(ctx.author.id)
-        cursor = self.bot.get_cog("General").get_cursor()
+        cursor = self.bot.get_cog("General").get_cursor("buffered")
         cursor.execute(f"SELECT guild, codenamesroleandcolor FROM members WHERE user = {author_id} AND codenamesroleandcolor LIKE '%spymaster'")
         query_result = cursor.fetchone()
         if query_result == None: 
@@ -616,7 +609,7 @@ class Codenames(commands.Cog):
         
         # are they an operative 
         author_id = int(ctx.author.id)
-        cursor = self.bot.get_cog("General").get_cursor()
+        cursor = self.bot.get_cog("General").get_cursor("buffered")
         cursor.execute(f"SELECT guild, codenamesroleandcolor FROM members WHERE user = {author_id} AND codenamesroleandcolor LIKE '%operative'")
         query_result = cursor.fetchone()
         if query_result == None: 
@@ -647,7 +640,7 @@ class Codenames(commands.Cog):
         '''Query the database for and return the unrevealed and revealed words of each color, plus the assassin word'''
         
         # get stuff from database
-        cursor = self.bot.get_cog("General").get_cursor()
+        cursor = self.bot.get_cog("General").get_cursor("buffered")
         cursor.execute(f"SELECT word, color, revealed FROM activeCodewords WHERE guild = {guild_id}")
         words = cursor.fetchall()
         cursor.close()
@@ -669,7 +662,7 @@ class Codenames(commands.Cog):
 
         # get some basic info
         guild_id = int(ctx.guild.id)
-        cursor = self.bot.get_cog("General").get_cursor()
+        cursor = self.bot.get_cog("General").get_cursor("buffered")
         cursor.execute(f"SELECT turn FROM codenamesGames WHERE guild = {guild_id}")
         prev_turn_color = cursor.fetchone()[0].split()[0]
         next_turn_color = self.cn_opposite_color(prev_turn_color)
@@ -684,7 +677,6 @@ class Codenames(commands.Cog):
             cpu_unrevealed_words = cursor.fetchall()
             rev_word_id, rev_word = cpu_unrevealed_words[0]
             cursor.execute(f"UPDATE activeCodewords SET revealed = 1 WHERE id = {rev_word_id}")
-            self.bot.get_cog("General").db.commit()
             await ctx.send(f"The computer correctly guesses that **{rev_word}** is **{next_turn_color}**.")
             
             # check if the human players lost
@@ -698,7 +690,6 @@ class Codenames(commands.Cog):
             
         # update game state in database
         cursor.execute(f"UPDATE codenamesGames SET turn = '{next_turn_color} spymaster', numClued = NULL, numGuessed = NULL WHERE guild = {guild_id}")
-        self.bot.get_cog("General").db.commit()
             
         # send message updates
         blue_words_unrevealed, blue_words_revealed, red_words_unrevealed, red_words_revealed, neutral_words_unrevealed, neutral_words_revealed, assassin_word, _ = self.cn_get_word_lists(guild_id)
@@ -716,7 +707,7 @@ class Codenames(commands.Cog):
 
         # give rewards
         guild_id = int(ctx.guild.id)
-        cursor = self.bot.get_cog("General").get_cursor()
+        cursor = self.bot.get_cog("General").get_cursor("buffered")
         cursor.execute(f"UPDATE users SET balance = balance + {WIN_CODENAMES_REWARD} WHERE id IN (SELECT user FROM members WHERE guild = {guild_id} AND (codenamesroleandcolor = '{winning_color} spymaster' OR codenamesroleandcolor = '{winning_color} operative'))")
         cursor.execute(f"UPDATE users SET balance = balance + {PLAY_CODENAMES_REWARD} WHERE id IN (SELECT user FROM members WHERE guild = {guild_id} AND (codenamesroleandcolor = '{self.cn_opposite_color(winning_color)} spymaster' OR codenamesroleandcolor = '{self.cn_opposite_color(winning_color)} operative'))")
         cursor.execute(f"UPDATE users SET balance = balance + {DOUBLE_AGENT_REWARD} WHERE id IN (SELECT user FROM members WHERE guild = {guild_id} AND codenamesroleandcolor = 'blue and red operative')")
@@ -761,7 +752,6 @@ class Codenames(commands.Cog):
         cursor.execute(f"UPDATE members SET codenamesroleandcolor = NULL WHERE guild = {guild_id}")
         cursor.execute(f"DELETE FROM activeCodewords WHERE guild={guild_id}")
         cursor.execute(f"DELETE FROM codenamesGames WHERE guild={guild_id}")
-        self.bot.get_cog("General").db.commit()
         cursor.close()
 
 
