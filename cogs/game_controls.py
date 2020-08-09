@@ -137,7 +137,6 @@ class GameControls(commands.Cog, name="Game Controls"):
             
             # set all votes to null, except the person who gave the command
             cursor.execute(f"UPDATE members SET votetoquit{game} = NULL WHERE guild = {guild_id}")
-            self.bot.get_cog("General").db.commit()
             cursor.execute(f"SELECT * from members WHERE user = {author_id} AND guild = {guild_id}")
             query_result = cursor.fetchall()
             if len(query_result) == 0:
