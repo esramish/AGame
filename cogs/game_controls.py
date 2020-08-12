@@ -56,11 +56,11 @@ class GameControls(commands.Cog, name="Game Controls"):
             await ctx.send(f"**{game}** is not a game that can be \"begun.\" If you're simply trying to start a game, use `{PREFIX}start {game}`")
             return
 
-        cursor = self.bot.get_cog("General").get_cursor()
+        cursor = self.bot.get_cog("General").get_cursor("buffered")
 
         # get info about the current state of the game
         # start by checking if the guild is in the guilds table
-        cursor.execute(f"SELECT codenamesstartmsg FROM guilds WHERE id={ctx.guild.id}")
+        cursor.execute(f"SELECT codenamesstartmsg FROM guilds WHERE id={int(ctx.guild.id)}")
         query_result = cursor.fetchone()
         if query_result == None: # guild's not in the guilds table yet, which means there isn't a game in the process of starting. We won't bother adding them here
             await ctx.send(f"There's no {game} game in the process of starting right now.")
@@ -69,7 +69,7 @@ class GameControls(commands.Cog, name="Game Controls"):
         
         cursor.close()
 
-        # okay, if there's a game starting, cancel it and send an informative message
+        # okay, if there's a game starting, begin it
         game_begun = False
         if game=='codenames':
             if query_result[0] != None:
@@ -99,22 +99,28 @@ class GameControls(commands.Cog, name="Game Controls"):
             await ctx.send(f"**{game}** is not a game that can be quit")
             return
 
-        cursor = self.bot.get_cog("General").get_cursor()
+        guild_id = int(ctx.guild.id)
+        author_id = int(ctx.author.id)
+        cursor = self.bot.get_cog("General").get_cursor("buffered")
 
         # get info about the current states of the game/vote countdown in question
         # start by checking if the guild is in the guilds table
-        cursor.execute(f"SELECT currword FROM guilds WHERE id={ctx.guild.id}")
+        cursor.execute(f"SELECT currword FROM guilds WHERE id={guild_id}")
         query_result = cursor.fetchone()
         if query_result == None: # guild's not in the guilds table yet, which means there isn't a game going. We won't bother adding them here
             await ctx.send(f"There's no {game} game going right now.")
             cursor.close()
             return
         
-        # okay, the guild is in the guilds table. Figure out if a game is going
+        # okay, the guild is in the guilds table, so go ahead and add user and member to their respective tables if not already there
+        self.bot.get_cog("General").confirm_user_in_db_users(ctx.author) # just so we don't have a member entry without a corresponding user entry
+        self.bot.get_cog("General").confirm_member_in_db_members(author_id, guild_id)
+
+        # Figure out if a game is going
         if game == 'guess':
             game_going = query_result[0] != None
         elif game == 'codenames':
-            cursor.execute(f"SELECT * FROM activeCodewords WHERE guild = {ctx.guild.id}")
+            cursor.execute(f"SELECT * FROM activeCodewords WHERE guild = {guild_id}")
             query_result = cursor.fetchone()
             game_going = query_result != None
         # we can add more games with elifs here
@@ -124,7 +130,7 @@ class GameControls(commands.Cog, name="Game Controls"):
             return
         
         # okay, the game in question is going. Is there already a countdown to stop it?
-        cursor.execute(f"SELECT {game}quitvotedeadline FROM guilds WHERE id={ctx.guild.id}")
+        cursor.execute(f"SELECT {game}quitvotedeadline FROM guilds WHERE id={guild_id}")
         deadline = cursor.fetchone()[0]
         if deadline == None: # there is no countdown going
             # if the user voted no for some reason, don't start a countdown or store their vote
@@ -134,20 +140,13 @@ class GameControls(commands.Cog, name="Game Controls"):
                 return
             
             # set all votes to null, except the person who gave the command
-            cursor.execute(f"UPDATE members SET votetoquit{game} = NULL WHERE guild = {ctx.guild.id}")
-            self.bot.get_cog("General").db.commit()
-            cursor.execute(f"SELECT * from members WHERE user = {ctx.author.id} AND guild = {ctx.guild.id}")
-            query_result = cursor.fetchall()
-            if len(query_result) == 0:
-                cursor.execute(f"INSERT INTO members (user, guild, votetoquit{game}) VALUES ({ctx.author.id}, {ctx.guild.id}, 1)")
-            else:
-                cursor.execute(f"UPDATE members SET votetoquit{game} = 1 WHERE user = {ctx.author.id} AND guild = {ctx.guild.id}")
+            cursor.execute(f"UPDATE members SET votetoquit{game} = NULL WHERE guild = {guild_id}")
+            cursor.execute(f"UPDATE members SET votetoquit{game} = 1 WHERE user = {author_id} AND guild = {guild_id}")
             
             # enter the voting deadline
             deadline = datetime.strftime(datetime.utcnow() + timedelta(minutes=1), '%Y-%m-%d %H:%M:%S')
-            cursor.execute(f"UPDATE guilds SET {game}quitvotedeadline = '{deadline}' where id={ctx.guild.id}")
+            cursor.execute(f"UPDATE guilds SET {game}quitvotedeadline = '{deadline}' where id={guild_id}")
             
-            self.bot.get_cog("General").db.commit()
             cursor.close()
 
             # send a message to the context
@@ -168,27 +167,25 @@ class GameControls(commands.Cog, name="Game Controls"):
             await ctx.send(f"{ctx.author.name}, I don't understand your vote. Please use the format `{PREFIX}quit {game} <yes/no>`")
             return
         # record vote
-        cursor.execute(f"SELECT * from members WHERE user = {ctx.author.id} AND guild = {ctx.guild.id}")
-        query_result = cursor.fetchall()
-        if len(query_result) == 0:
-            cursor.execute(f"INSERT INTO members (user, guild, votetoquit{game}) VALUES ({ctx.author.id}, {ctx.guild.id}, {wants_to_quit})")
-        else:
-            cursor.execute(f"UPDATE members SET votetoquit{game} = {wants_to_quit} WHERE user = {ctx.author.id} AND guild = {ctx.guild.id}")
+        cursor.execute(f"UPDATE members SET votetoquit{game} = {wants_to_quit} WHERE user = {author_id} AND guild = {guild_id}")
         
-        self.bot.get_cog("General").db.commit()
         cursor.close()
         
         await ctx.send(f"{ctx.author.name} votes to **{'end' if wants_to_quit else 'continue'}** the {game} game")
 
     async def quit_timer(self, ctx, game):
+        
+        # validate game one more time just to be safe (even though this method should only be called where game is already validated)
+        if game not in QUITTABLE_GAMES:
+            raise ValueError()
+        
         await asyncio.sleep(60)
         
-        cursor = self.bot.get_cog("General").get_cursor()
+        cursor = self.bot.get_cog("General").get_cursor("buffered")
         guild_id = int(ctx.guild.id)
 
         # clear deadline in database
         cursor.execute(f"UPDATE guilds SET {game}quitvotedeadline = NULL WHERE id={guild_id}")
-        self.bot.get_cog("General").db.commit()
         
         # address the results
         cursor.execute(f"SELECT votetoquit{game} FROM members WHERE guild = {guild_id}")
@@ -205,7 +202,6 @@ class GameControls(commands.Cog, name="Game Controls"):
                 cursor.execute(f"SELECT currword FROM guilds WHERE id={guild_id}")
                 await ctx.send(f"My word was **{cursor.fetchone()[0]}**")
                 cursor.execute(f"UPDATE guilds SET currword = NULL where id={guild_id}")
-                self.bot.get_cog("General").db.commit()
             elif game=='codenames':
                 # send the declassified game board
                 await self.bot.get_cog('Codenames').cn_send_declassified_board(ctx)
@@ -214,7 +210,6 @@ class GameControls(commands.Cog, name="Game Controls"):
                 cursor.execute(f"UPDATE members SET codenamesroleandcolor = NULL WHERE guild = {guild_id}")
                 cursor.execute(f"DELETE FROM activeCodewords WHERE guild={guild_id}")
                 cursor.execute(f"DELETE FROM codenamesGames WHERE guild={guild_id}")
-                self.bot.get_cog("General").db.commit()
             # can add more games here with elifs
         else: 
             await ctx.send(f"Time's up! The people have spoken: they've voted {len(neas)}-{len(yeas)} to **continue** the {game} game.")
@@ -239,11 +234,12 @@ class GameControls(commands.Cog, name="Game Controls"):
             await ctx.send(f"**{game}** is not a game that can be cancelled. If you're trying to quit an in-progress game, use `{PREFIX}quit {game}`")
             return
 
-        cursor = self.bot.get_cog("General").get_cursor()
+        guild_id = int(ctx.guild.id)
+        cursor = self.bot.get_cog("General").get_cursor("buffered")
 
         # get info about the current state of the game
         # start by checking if the guild is in the guilds table
-        cursor.execute(f"SELECT codenamesstartmsg FROM guilds WHERE id={ctx.guild.id}")
+        cursor.execute(f"SELECT codenamesstartmsg FROM guilds WHERE id={guild_id}")
         query_result = cursor.fetchone()
         if query_result == None: # guild's not in the guilds table yet, which means there isn't a game in the process of starting. We won't bother adding them here
             await ctx.send(f"There's no {game} game in the process of starting right now.")
@@ -254,8 +250,7 @@ class GameControls(commands.Cog, name="Game Controls"):
         game_cancelled = False
         if game=='codenames':
             if query_result[0] != None:
-                cursor.execute(f"UPDATE guilds SET codenamesstartmsg = NULL WHERE id={ctx.guild.id}")
-                self.bot.get_cog("General").db.commit()
+                cursor.execute(f"UPDATE guilds SET codenamesstartmsg = NULL WHERE id={guild_id}")
                 game_cancelled = True
         # can add more games with elifs here
 
