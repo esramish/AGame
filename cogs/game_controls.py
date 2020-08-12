@@ -112,7 +112,11 @@ class GameControls(commands.Cog, name="Game Controls"):
             cursor.close()
             return
         
-        # okay, the guild is in the guilds table. Figure out if a game is going
+        # okay, the guild is in the guilds table, so go ahead and add user and member to their respective tables if not already there
+        self.bot.get_cog("General").confirm_user_in_db_users(ctx.author) # just so we don't have a member entry without a corresponding user entry
+        self.bot.get_cog("General").confirm_member_in_db_members(author_id, guild_id)
+
+        # Figure out if a game is going
         if game == 'guess':
             game_going = query_result[0] != None
         elif game == 'codenames':
@@ -137,12 +141,7 @@ class GameControls(commands.Cog, name="Game Controls"):
             
             # set all votes to null, except the person who gave the command
             cursor.execute(f"UPDATE members SET votetoquit{game} = NULL WHERE guild = {guild_id}")
-            cursor.execute(f"SELECT * from members WHERE user = {author_id} AND guild = {guild_id}")
-            query_result = cursor.fetchall()
-            if len(query_result) == 0:
-                cursor.execute(f"INSERT INTO members (user, guild, votetoquit{game}) VALUES ({author_id}, {guild_id}, 1)")
-            else:
-                cursor.execute(f"UPDATE members SET votetoquit{game} = 1 WHERE user = {author_id} AND guild = {guild_id}")
+            cursor.execute(f"UPDATE members SET votetoquit{game} = 1 WHERE user = {author_id} AND guild = {guild_id}")
             
             # enter the voting deadline
             deadline = datetime.strftime(datetime.utcnow() + timedelta(minutes=1), '%Y-%m-%d %H:%M:%S')
@@ -168,12 +167,7 @@ class GameControls(commands.Cog, name="Game Controls"):
             await ctx.send(f"{ctx.author.name}, I don't understand your vote. Please use the format `{PREFIX}quit {game} <yes/no>`")
             return
         # record vote
-        cursor.execute(f"SELECT * from members WHERE user = {author_id} AND guild = {guild_id}")
-        query_result = cursor.fetchall()
-        if len(query_result) == 0:
-            cursor.execute(f"INSERT INTO members (user, guild, votetoquit{game}) VALUES ({author_id}, {guild_id}, {wants_to_quit})")
-        else:
-            cursor.execute(f"UPDATE members SET votetoquit{game} = {wants_to_quit} WHERE user = {author_id} AND guild = {guild_id}")
+        cursor.execute(f"UPDATE members SET votetoquit{game} = {wants_to_quit} WHERE user = {author_id} AND guild = {guild_id}")
         
         cursor.close()
         

@@ -31,17 +31,12 @@ class Codenames(commands.Cog):
             await ctx.send("Using this command in a private chat is not allowed.")
             return
         
-        cursor = self.bot.get_cog("General").get_cursor("prepared")
-        
         # make sure the user is in the users table, so they can be rewarded if their suggestion is approved
-        author_id = int(ctx.author.id)
-        cursor.execute("SELECT balance FROM users where id=%s", (author_id,))
-        query_result = cursor.fetchall()
-        if len(query_result) == 0: # user's not in the users table yet, so add them in with balance of 0
-            cursor.execute("INSERT INTO users (id, username, balance) VALUES (%s, %s, 0)", (author_id, ctx.author.name))
+        self.bot.get_cog("General").confirm_user_in_db_users(ctx.author)
         
         # check if word was recently suggested or already approved
         word = word.lower()
+        cursor = self.bot.get_cog("General").get_cursor("prepared")
         cursor.execute("SELECT suggestion_time, approved FROM codewords WHERE word=%s", (word,))
         query_result = cursor.fetchall()
         if len(query_result) != 0:
@@ -113,24 +108,21 @@ class Codenames(commands.Cog):
         cursor.close()
 
     async def start_codenames(self, ctx):
-        cursor = self.bot.get_cog("General").get_cursor("prepared")
+        cursor = self.bot.get_cog("General").get_cursor("buffered")
         guild_id = int(ctx.guild.id)
-        guild_name = ctx.guild.name
 
         # make sure there's not already a game going
-        cursor.execute("SELECT * FROM activeCodewords WHERE guild = %s", (guild_id,))
+        cursor.execute(f"SELECT * FROM codenamesGames WHERE guild = {guild_id}")
         query_result = cursor.fetchall()
         if len(query_result) != 0:
             await ctx.send("There's already a codenames game in progress on this server--sorry!")
             cursor.close()
             return
 
-        cursor.execute("SELECT codenamesstartmsg FROM guilds WHERE id = %s", (guild_id,))
-        query_result = cursor.fetchall()
-        
-        if len(query_result) == 0: # need to add the guild to the guilds table
-            cursor.execute("INSERT INTO guilds (id, guildname) VALUES (%s, %s)", (guild_id, guild_name))
-        elif query_result[0][0] != None: # there's already a start-game going
+        self.bot.get_cog("General").confirm_guild_in_db_guilds(ctx.guild)
+        cursor.execute(f"SELECT codenamesstartmsg FROM guilds WHERE id = {guild_id}")
+        query_result = cursor.fetchone()
+        if query_result[0] != None: # there's already a start-game going
             await ctx.send(f"It seems someone is already trying to start codenames on this server. If this is not the case, use `{PREFIX}cancel codenames` before giving this command again")
             cursor.close()
             return
@@ -142,7 +134,7 @@ class Codenames(commands.Cog):
         message = await ctx.send(embed=embed)
 
         # get the id of this message and store it in the guilds table
-        cursor.execute("UPDATE guilds SET codenamesstartmsg = %s WHERE id = %s", (int(message.id), guild_id))
+        cursor.execute(f"UPDATE guilds SET codenamesstartmsg = {int(message.id)} WHERE id = {guild_id}")
 
         # set up the reactions
         await message.add_reaction(BLUE_SPY_EMOJI)
@@ -207,18 +199,8 @@ class Codenames(commands.Cog):
 
         # make sure all players are in the members table for this guild, and the users table
         for user in players:
-            user_id = int(user.id)
-            cursor.execute(f"SELECT * FROM members WHERE user = {user_id} AND guild = {guild_id}")
-            query_result = cursor.fetchone()
-            if query_result == None:
-                cursor.execute(f"INSERT INTO members (user, guild) VALUES ({user_id}, {guild_id})")
-
-            cursor.execute(f"SELECT * FROM users where id={user_id}")
-            query_result = cursor.fetchone()
-            if query_result == None: # user's not in the users table yet, so add them in with balance of 0
-                prepared_cursor = self.bot.get_cog("General").get_cursor("prepared")
-                prepared_cursor.execute("INSERT INTO users (id, username, balance) VALUES (%s, %s, 0)", (user_id, user.name))
-                prepared_cursor.close()
+            self.bot.get_cog("General").confirm_user_in_db_users(user)
+            self.bot.get_cog("General").confirm_member_in_db_members(user.id, guild_id)
 
         # assign users their new roles in the members table (making them all operatives of the spymaster's color in a cooperative game, and making the operative both colors in a competitive 3-player game)
         # spymasters
