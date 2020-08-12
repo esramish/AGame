@@ -24,12 +24,6 @@ def get_new_db_connection():
         autocommit=True
     )
 
-def sql_escape_single_quotes(string):
-    return string.replace("'", "''")
-
-def sql_unescape_single_quotes(string):
-    return string.replace("''", "'")
-
 def mention_string_from_id_strings(user_ids):
     return "<@!" + ">, <@!".join(user_ids) + ">"
 
@@ -61,6 +55,26 @@ class General(commands.Cog):
             return self.db.cursor(prepared=True)
         else:
             raise ValueError()
+    
+    def confirm_user_in_db_users(self, user):
+        '''Insert an entry for this user in the users table if one is not already there'''
+        user_id = int(user.id)
+        with self.get_cursor("prepared") as cursor:
+            cursor.execute("INSERT INTO users (id, username, balance) VALUES (%s, %s, 0) ON DUPLICATE KEY UPDATE id=id", (user_id, user.name))
+        
+    def confirm_guild_in_db_guilds(self, guild):
+        '''Insert an entry for this guild in the guilds table if one is not already there'''
+        guild_id = int(guild.id)
+        with self.get_cursor("prepared") as cursor:
+            cursor.execute("INSERT INTO guilds (id, guildname) VALUES (%s, %s) ON DUPLICATE KEY UPDATE id=id", (guild_id, guild.name))
+    
+    def confirm_member_in_db_members(self, user_id: int, guild_id: int):
+        '''Insert an entry for this user/guild pair in the members table if one is not already there'''
+        with self.get_cursor("buffered") as cursor:
+            cursor.execute(f"SELECT * FROM members WHERE user = {user_id} AND guild = {guild_id}")
+            query_result = cursor.fetchone()
+            if query_result == None:
+                cursor.execute(f"INSERT INTO members (user, guild) VALUES ({user_id}, {guild_id})")
 
     @commands.Cog.listener()
     async def on_ready(self):
