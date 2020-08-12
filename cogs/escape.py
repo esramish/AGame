@@ -57,9 +57,12 @@ class Escape(commands.Cog):
             await ctx.send("Using this command in a private chat is not allowed.")
             return
         
+        # make sure guild is in the guilds table (just so there's a corresponding entry for an escapeGames entry with that guild id)
+        self.bot.get_cog("General").confirm_guild_in_db_guilds(ctx.guild)
+        
         # figure out guild's current stage in the escape game
         guild_id = int(ctx.guild.id)
-        cursor = self.bot.get_cog("General").get_cursor()
+        cursor = self.bot.get_cog("General").get_cursor("buffered")
         cursor.execute(f"SELECT stage FROM escapeGames WHERE guild = {guild_id}")
         query_result = cursor.fetchone()
         if query_result == None:
@@ -133,7 +136,7 @@ class Escape(commands.Cog):
             await ctx.send(f"You can use `{PREFIX}escape view 0 2b8ac9` to view this image again")
         elif False:
             # advance them to stage 1
-            cursor = self.bot.get_cog("General").get_cursor()
+            cursor = self.bot.get_cog("General").get_cursor("normal")
             cursor.execute(f"UPDATE escapeGames SET stage = 1 WHERE guild = {guild_id}")
             cursor.close()
         else:
