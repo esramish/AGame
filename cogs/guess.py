@@ -64,19 +64,15 @@ class Guess(commands.Cog):
         
         # okay, there is indeed a game going on at this point
 
-        # make sure the user is in the users table, so they can be rewarded at game end
+        # make sure the user is in the users table, so they can be rewarded at game end (this is fine to perform here even if their guess ends up being invalid)
         self.bot.get_cog("General").confirm_user_in_db_users(ctx.author)
-
-        # make sure the user gets credit for participating in this game
-        author_id = int(ctx.author.id)
-        self.bot.get_cog("General").confirm_member_in_db_members(author_id, guild_id)
-        cursor.execute(f"UPDATE members SET playingguess = 1 WHERE user = {author_id} AND guild = {guild_id}")
 
         # evaluate the guess
         if guess == word: # winning guess!
             cursor.execute(f"UPDATE guilds SET currword = NULL WHERE id = {guild_id}")
             
             # reward winner 
+            author_id = int(ctx.author.id)
             cursor.execute(f"UPDATE users SET balance = balance + {WIN_GUESS_REWARD} WHERE id = {author_id}")
 
             # record other participants, for the sake of the message that'll be sent
@@ -120,7 +116,16 @@ class Guess(commands.Cog):
             await ctx.send(f"I don't recognize the word **{guess}**")
             return
         
-        # okay, it is a valid guess, so respond to the user with how many letters in common
+        # okay, it is a valid guess
+        # make sure the user gets credit for participating in this game
+        author_id = int(ctx.author.id)
+        guild_id = int(ctx.guild.id)
+        self.bot.get_cog("General").confirm_member_in_db_members(author_id, guild_id)
+        cursor = self.bot.get_cog("General").get_cursor("normal")
+        cursor.execute(f"UPDATE members SET playingguess = 1 WHERE user = {author_id} AND guild = {guild_id}")
+        cursor.close()
+        
+        # respond to the user with how many letters in common
         num_common_letters = 0
         for char in word:
             num_common_letters += char in guess
