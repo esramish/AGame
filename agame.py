@@ -102,7 +102,7 @@ if __name__ == "__main__":
     bot.add_cog(General(bot))
     
     # load extensions
-    initial_extensions = ['cogs.guess', 'cogs.codenames', 'cogs.game_controls', 'cogs.money']
+    initial_extensions = ['cogs.guess', 'cogs.codenames', 'cogs.game_controls', 'cogs.money', 'cogs.misc']
     for extension in initial_extensions:
         try:
             bot.load_extension(extension)
