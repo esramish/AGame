@@ -78,6 +78,8 @@ class General(commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self):
+        activity = discord.Game(f"Who Will Say {PREFIX}help")
+        await bot.change_presence(activity=activity)
         print(f'{bot.user.name} has connected to Discord!')
 
     @commands.Cog.listener()
